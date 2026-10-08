@@ -8,20 +8,16 @@
   - 根据模型、显存和上下文要求计算最小 TP
   - 启动 vLLM-Ascend OpenAI 兼容服务
   - 完成进程、启动日志、模型 API 和对话 API 验收
-- `.codex/skills/vllm_serve_bench/`
-  - 对已运行的 vLLM 服务执行 `vllm bench serve`
-  - 支持长 prefill、长 decode 和均衡负载场景
-  - 保存压测结果并生成报告
-
 - `.codex/skills/vllm_ascend_benchmark_skill/`
   - 按显式的模型、TP、DP 和批处理参数执行昇腾模型压测
-  - 支持 `random`、Hugging Face 和本地 custom 数据集
+  - 已融合原 `vllm_serve_bench` 的在线服务压测能力
+  - 支持 `long_prefill`、`long_decode`、`prefill_decode_balance` 和 `random` 场景
+  - 内置服务启动、健康检查、模型身份校验、静态 OOM 预检和数据集路径校验
   - 以单个 `benchmark_result.json` 作为最终结果契约
 
 ## Recommended workflow
 
 1. 使用 `minimal-tp-vllm-ascend-deploy` 部署并验收服务。
-2. 需要三类在线服务场景或真实数据集对比时，使用 `vllm_serve_bench`。
-3. 需要固定输入契约、验证 TP/DP 配置并生成标准结果 JSON 时，使用 `vllm_ascend_benchmark_skill`。
+2. 使用 `vllm_ascend_benchmark_skill` 执行统一压测；它覆盖长 prefill、长 decode、prefill/decode 均衡和 random 场景，并生成标准结果 JSON。
 
-三个 Skill 都保留了各自的配置、脚本和参考文档，可从项目根目录启动 Codex 后使用。
+当前保留的 Skill 都有独立配置和参考文档，可从项目根目录启动 Codex 后使用。
