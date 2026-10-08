@@ -1,6 +1,7 @@
 .agents/
 .aws/
 .git/
+.gp/
 results/
 scripts/
 __pycache__/
