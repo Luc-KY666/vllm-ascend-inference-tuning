@@ -1,0 +1,7 @@
+.agents/
+.aws/
+.git/
+results/
+scripts/
+__pycache__/
+*.py[cod]

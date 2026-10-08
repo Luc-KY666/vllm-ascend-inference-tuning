@@ -1,0 +1,6 @@
+interface:
+  display_name: "vLLM-Ascend 压测 Verifier"
+  short_description: "输入模型、场景与并行参数并输出 benchmark_result.json"
+  default_prompt: "使用 $vllm-ascend-benchmark-skill 执行昇腾模型压测。执行压测时必须提供 model_name、model_path、scenario、TP、DP、max_num_seqs、max_num_batched_tokens，其余参数使用文档默认值，最终输出 benchmark_result.json。"
+policy:
+  allow_implicit_invocation: true
