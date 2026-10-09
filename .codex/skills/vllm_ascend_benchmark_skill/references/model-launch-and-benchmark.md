@@ -1,6 +1,6 @@
 # 模型拉起与压测
 
-本节根据七个必填输入、数据集配置和其他显式覆盖值，执行动态环境检查、模型服务启动、健康检查、在线 HTTP `vllm bench serve`、失败诊断以及最终 JSON 写入。
+本节根据八个必填输入、可选 goodput 输入、数据集配置和其他显式覆盖值，执行动态环境检查、模型服务启动、健康检查、在线 HTTP `vllm bench serve`、失败诊断以及最终 JSON 写入。
 
 本 Skill 启动服务后通过 OpenAI 兼容 HTTP 接口压测该服务。默认使用 `openai-chat` backend 和 `/v1/chat/completions`；base 模型可以显式覆盖为 `openai` backend 和 `/v1/completions`。不要使用 `--backend vllm`，因为该模式会绕过已启动的 HTTP 服务并重新加载本地引擎。
 
@@ -45,25 +45,25 @@ MODEL_PATH=<必填的 model_path，服务模型来源和 benchmark tokenizer 来
 
 `MODEL_NAME` 是 API 请求中的 served model name；`MODEL_PATH` 是服务加载模型的路径或 ID，也是 `vllm bench serve --tokenizer` 用于加载 tokenizer 的来源。两者不能因为看起来相似而互相替代。
 
-实际端口、模型来源、benchmark backend/endpoint、结果目录和本次任务实际使用的 NPU 卡号必须写入最终 `benchmark_result.json`。NPU 卡号记录在 `model_config.npu_devices` 中。不得在最终 JSON 或必需的用户可见诊断工件中写入 NPU 健康状态、HBM 占用、运行进程或资源快照。端口 `8117` 被占用时，可以选择一个可用端口进行一次安全修复，但不得改变七个必填输入。
+实际端口、模型来源、benchmark backend/endpoint、结果目录和本次任务实际使用的 NPU 卡号必须写入最终 `benchmark_result.json`。NPU 卡号记录在 `model_config.npu_devices` 中。不得在最终 JSON 或必需的用户可见诊断工件中写入 NPU 健康状态、HBM 占用、运行进程或资源快照。端口 `8117` 被占用时，可以选择一个可用端口进行一次安全修复，但不得改变八个必填输入。
 
 ## 2. 本机环境画像缓存
 
 为支持同一机器上频繁执行多组配置压测，可复用的环境探测必须从单次运行流程中提取出来，写入本机环境画像文件。默认画像路径为 `${RESULT_ROOT%/}/environment_profile.json`；显式覆盖 `ENVIRONMENT_PROFILE_PATH` 时必须写入 `overrides`。
 
-环境画像只缓存跨运行稳定、且与七个必填输入无关的信息，例如：
+环境画像只缓存跨运行稳定、且与八个必填输入无关的信息，例如：
 
 - `schema_version`：固定为 `vllm-ascend-benchmark-env-v1`。
 - `created_at`、`updated_at` 和生成画像时使用的时区或 UTC offset。
 - `commands`：`python3`、`vllm`、`curl`、`npu-smi` 的可执行路径及轻量文件指纹。
 - `versions`：Python、Torch、vLLM 和 vLLM-Ascend 版本。
-- `vllm_cli`：`vllm serve` 和 `vllm bench serve` 的完整帮助摘要、已确认支持的关键参数、是否支持显式结果文件名、是否支持 `--served-model-name`。
+- `vllm_cli`：`vllm serve` 和 `vllm bench serve` 的完整帮助摘要、已确认支持的关键参数、是否支持 `--served-model-name`、`--goodput` 和显式结果文件名。
 - `npu_baseline`：Torch NPU 是否可用、生成画像时可见设备数量和 `ASCEND_RT_VISIBLE_DEVICES` 值；不得记录设备健康状态、HBM 占用、运行进程或启动/清理资源快照。
 - `datasets.local_paths`：本地数据集目录或文件的可读性、JSON 可解析性、样本数或条目数等校验结果，以及路径类型、大小、mtime、inode 等用于判断缓存是否过期的指纹。
 
 以下内容不得放入环境画像并复用：
 
-- 七个必填输入及其派生值。
+- 八个必填输入及其派生值。
 - 本次服务端口占用、服务 PID、服务健康状态和 `/v1/models` 身份校验结果。
 - 当前 NPU 上的运行进程、实时 HBM 占用、设备健康状态或清理前后资源快照。
 - 本次模型路径的权重、tokenizer 和配置检查结果，除非后续文档显式引入独立的模型画像缓存。
@@ -75,6 +75,7 @@ MODEL_PATH=<必填的 model_path，服务模型来源和 benchmark tokenizer 来
 - Python/Torch/vLLM/vLLM-Ascend 模块路径指纹未变化；无法确认时必须刷新画像，而不是继续信任旧画像。
 - 当前 `ASCEND_RT_VISIBLE_DEVICES` 与画像中的值一致；不一致时至少刷新 NPU baseline，不能用旧的可见设备数做本次 TP/DP 判断。
 - 本次需要使用的本地数据集路径在画像中存在且路径指纹一致；不存在或已变化时，只重新校验该路径并以原子写入方式更新画像。
+- 如果本次启用了 goodput，画像必须确认 `vllm bench serve` 支持 `--goodput`；画像缺少该结论或记录为不支持时，必须刷新 CLI 检查，不能静默忽略 goodput。
 
 当 `REFRESH_ENVIRONMENT_PROFILE=true`、画像不存在、画像校验失败或关键路径指纹变化时，才执行完整环境探测。刷新失败时，在启动服务前写出环境检查失败结果 JSON；不要退回到未经校验的旧画像。画像写入必须先写临时文件，校验 JSON 可解析后再原子替换目标文件。
 
@@ -99,11 +100,12 @@ vllm serve: --host --port --served-model-name --tensor-parallel-size
             --data-parallel-size --max-num-seqs --max-num-batched-tokens
 vllm bench serve: --backend --model --tokenizer --base-url --endpoint
                   --dataset-name --hf-name --dataset-path
-                  --num-prompts --max-concurrency
+                  --num-prompts --request-rate --max-concurrency
+                  --num-warmups --burstiness --goodput
                   --save-result --result-dir
 ```
 
-如果普通帮助只显示配置分组，不能将其视为参数兼容性检查通过；应使用当前版本的完整帮助或实际参数解析结果。检查失败时，在启动服务前写出环境检查失败结果。画像有效且已包含这些检查结果时，后续运行不得重复执行完整帮助和模块导入探测。
+如果普通帮助只显示配置分组，不能将其视为参数兼容性检查通过；应使用当前版本的完整帮助或实际参数解析结果。检查失败时，在启动服务前写出环境检查失败结果。启用 goodput 但当前 CLI 不支持 `--goodput` 时，在启动服务前写出环境检查失败结果，不得退回到不带 goodput 的 benchmark。画像有效且已包含这些检查结果时，后续运行不得重复执行完整帮助和模块导入探测。
 
 确认 vLLM-Ascend 可以使用 NPU，并记录版本：
 
@@ -181,7 +183,7 @@ vllm serve "${SERVE_ARGS[@]}" >"${SERVER_LOG}" 2>&1 &
 SERVER_PID=$!
 ```
 
-每次启动尝试都必须在 `COMMANDS_LOG` 中记录 attempt 编号、完整命令、`SERVER_PID`、启动时间和结果。若 `/health` 成功前 `SERVER_PID` 已退出，先检查 `SERVER_LOG`：日志为空或没有 vLLM 启动标记且父执行上下文已结束时，按启动生命周期问题处理；已有模型、路径、OOM 或配置错误日志时，按对应失败类型处理。启动生命周期问题可以用完全相同的 `SERVE_ARGS` 做一次有记录的安全重试，重试不得修改七个必填输入；重试时保留前一次命令和失败原因，并将当前有效 PID 更新为新的 `SERVER_PID`。
+每次启动尝试都必须在 `COMMANDS_LOG` 中记录 attempt 编号、完整命令、`SERVER_PID`、启动时间和结果。若 `/health` 成功前 `SERVER_PID` 已退出，先检查 `SERVER_LOG`：日志为空或没有 vLLM 启动标记且父执行上下文已结束时，按启动生命周期问题处理；已有模型、路径、OOM 或配置错误日志时，按对应失败类型处理。启动生命周期问题可以用完全相同的 `SERVE_ARGS` 做一次有记录的安全重试，重试不得修改八个必填输入；重试时保留前一次命令和失败原因，并将当前有效 PID 更新为新的 `SERVER_PID`。
 
 启动后按 `POLL_INTERVAL_SEC` 轮询：
 
@@ -228,7 +230,7 @@ curl --fail --silent "http://127.0.0.1:${PORT}/v1/models"
 
 ## 6. benchmark 命令
 
-服务健康和身份验证通过后，使用在线 OpenAI 兼容 backend 执行：
+服务健康和身份验证通过后，使用在线 OpenAI 兼容 backend 执行。`NUM_PROMPTS`、`REQUEST_RATE`、`MAX_CONCURRENCY` 和 `BURSTINESS` 必须使用[数据集配置](dataset-config.md)按 `benchmark_mode` 派生并完成样本数截断后的最终值：
 
 ```bash
 BENCH_ARGS=(
@@ -251,7 +253,23 @@ BENCH_ARGS=(
 if [ -n "${BURSTINESS:-}" ]; then
     BENCH_ARGS+=(--burstiness "${BURSTINESS}")
 fi
+
+GOODPUT_ARGS=()
+if [ -n "${GOODPUT_TTFT_MS:-}" ]; then
+    GOODPUT_ARGS+=("ttft:${GOODPUT_TTFT_MS}")
+fi
+if [ -n "${GOODPUT_TPOT_MS:-}" ]; then
+    GOODPUT_ARGS+=("tpot:${GOODPUT_TPOT_MS}")
+fi
+if [ -n "${GOODPUT_E2EL_MS:-}" ]; then
+    GOODPUT_ARGS+=("e2el:${GOODPUT_E2EL_MS}")
+fi
+if [ "${#GOODPUT_ARGS[@]}" -gt 0 ]; then
+    BENCH_ARGS+=(--goodput "${GOODPUT_ARGS[@]}")
+fi
 ```
+
+`GOODPUT_TTFT_MS`、`GOODPUT_TPOT_MS` 和 `GOODPUT_E2EL_MS` 由可选 goodput 输入归一化得到；至少一个非空时才追加 `--goodput`。不要为了“启用 goodput”填充未提供的约束，也不要把用户的 `TPOP` 直接传给 CLI，应归一化为 `tpot`。
 
 这里的 `--model` 是 API 请求使用的模型名；未显式传入服务模型名时，`vllm bench serve` 默认使用 `--model` 的值。`--tokenizer` 是 tokenizer 名称或路径，通常传入 `MODEL_PATH`，用于加载服务模型对应的 tokenizer。不要使用 `--backend vllm`、`--host`/`--port` 直连本地引擎的旧命令形态。
 
@@ -363,7 +381,8 @@ ShareGPT 文件必须在 benchmark 前准备并通过 JSON 可解析性检查。
 如果 CLI 没有显式结果文件路径参数，benchmark 完成后只能从本次运行目录中确定原始结果文件：
 
 - 候选必须是本次 benchmark 开始后新建或更新的、可读且非空的 JSON 普通文件；排除 `${SUMMARY_JSON}`、临时文件和其他诊断文件。
-- 候选必须能解析为 JSON，并且其中存在的模型标识（如 `model_id` 或 `served_model_name`）必须与 `${MODEL_NAME}` 完全一致；存在 `tokenizer_id`、`num_prompts` 或 `max_concurrency` 时，必须分别与 `${MODEL_PATH}`、`${NUM_PROMPTS}` 和 `${MAX_CONCURRENCY}` 一致。
+- 候选必须能解析为 JSON，并且其中存在的模型标识（如 `model_id` 或 `served_model_name`）必须与 `${MODEL_NAME}` 完全一致；存在 `tokenizer_id`、`num_prompts`、`max_concurrency`、`request_rate` 或 `burstiness` 时，必须分别与 `${MODEL_PATH}`、`${NUM_PROMPTS}`、`${MAX_CONCURRENCY}`、`${REQUEST_RATE}` 和 `${BURSTINESS}` 一致。
+- 启用 goodput 时，候选必须包含可解析的数值字段 `request_goodput`，包括合法的 `0`；缺失或为 `null` 时不得把 benchmark 当作 goodput 结果。未启用 goodput 时不从 `request_goodput` 推导任何值。
 - 如果结果包含日期或时间字段，该字段必须与本次运行相符；候选还必须来自当前 `${RUN_DIR}`，不能复用上一次运行的文件。
 - 经过上述校验后必须恰好剩余一个候选。不得使用宽泛 glob 后取第一个、最新一个或任意一个文件来猜测结果。
 
@@ -380,17 +399,18 @@ p90_e2el_ms
 p99_e2el_ms
 ```
 
-如果结果使用嵌套 percentile 结构，则按指标名和百分位寻找 `90`、`99`，并转换成毫秒。任何缺失的性能值写为 `null`，不要填 `0` 或猜测。在线 benchmark 额外提供的 ITL、请求吞吐和 token 吞吐可以保存在 `dataset.parameters` 或诊断工件中，但不能替换输出契约规定的 TTFT、TPOT 和 E2EL 字段。
+如果结果使用嵌套 percentile 结构，则按指标名和百分位寻找 `90`、`99`，并转换成毫秒。任何缺失的性能值写为 `null`，不要填 `0` 或猜测。启用 goodput 时，将原始 JSON 的 `request_goodput` 原样提取到最终 `goodput.request_goodput`，单位为 `req/s`；不能用请求吞吐替代 goodput。在线 benchmark 额外提供的 ITL、请求吞吐和 token 吞吐可以保存在 `dataset.parameters` 或诊断工件中，但不能替换输出契约规定的 TTFT、TPOT 和 E2EL 字段。
 
 ## 9. 写出唯一结果 JSON
 
 benchmark 完成或失败后，写出主入口约定的 `${SUMMARY_JSON}`。结果 JSON 必须包含：
 
-- `model_config`：七个必填输入中的模型名称、模型路径、TP、DP、`max_num_seqs`、`max_num_batched_tokens`、实际端口、`npu_devices` 和 HTTP backend/endpoint。`npu_devices` 只记录本次任务实际使用的 NPU 卡号，不记录资源信息、健康状态、HBM 占用或运行进程。
-- `dataset`：数据集名称或模式、路径或 ID、HF 数据集名（HF 场景）、实际数据条数、最大并发、warmup、请求速率和数据集专用参数。`scenario` 为非 random 时记录 `dataset.scenario`；`scenario=random` 时省略该字段。
+- `model_config`：八个必填输入中的模型与部署相关字段，包括模型名称、模型路径、TP、DP、`max_num_seqs`、`max_num_batched_tokens`、实际端口、`npu_devices` 和 HTTP backend/endpoint。`npu_devices` 只记录本次任务实际使用的 NPU 卡号，不记录资源信息、健康状态、HBM 占用或运行进程。
+- `dataset`：数据集名称或模式、路径或 ID、HF 数据集名（HF 场景）、实际数据条数、`benchmark_mode`、最大并发、warmup、请求速率、burstiness 和数据集专用参数。`scenario` 为非 random 时记录 `dataset.scenario`；`scenario=random` 时省略该字段。
 - `static_oom_check`：静态 OOM 容量检查结果。`status=unknown` 时即使 benchmark 成功也不得删除或改写为 `pass`。该字段不得记录 NPU 健康状态、HBM 占用、运行进程或资源快照。
 - `Valid`：按照本节规则填写。
 - `performance`：TTFT、TPOT、E2EL 的 P90/P99，单位毫秒。
+- `goodput`：未启用时为 `null`；启用时记录 `constraints_ms` 和原始结果中的 `request_goodput`，单位为 `req/s`。如果 benchmark 未完成或 goodput 字段缺失，`request_goodput` 为 `null` 并按 benchmark 失败处理。
 - `status`、`error`、`overrides` 和诊断工件路径；诊断工件路径可以包含 `environment_profile`，指向本次读取或刷新的本机环境画像文件。
 
 `${SUMMARY_JSON}` 不得直接以截断方式写入。应先在同一目录生成临时文件，写完后验证文件非空、可解析为 JSON，并满足本 Skill 的最低结构和 `Valid`、`status`、`performance` 字段一致性；验证通过后再以原子方式替换 `${SUMMARY_JSON}`。写入或验证失败时，必须尽力写出一个最小且可解析的失败结果，不能留下空文件、半写文件或仅有终端输出。
