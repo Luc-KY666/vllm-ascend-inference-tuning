@@ -25,14 +25,20 @@ candidate promotion 或最终业务收益。
 4. 从规范输入、官方模型 `config.json` 和 provider 注入的硬件事实派生本次 attempt
    的 `static-oom-input.json`，再按 [static-oom.md](references/static-oom.md) 的
    唯一入口执行静态 OOM 预检。
-5. 静态预检为 `reject` 时不启动服务；为 `unknown` 时保留未知原因，不把结果改写成
-   `pass`。只有任务/provider 合同明确允许带着该未知项进入动态确认时才继续；没有
-   足够运行参数时，只输出最小 TP 推荐和 `status=recommendation_only`，不占用设备。
+5. 静态预检为 `reject` 时不启动服务，并在部署报告中记录
+   `status=static_oom_rejected`、`failure.type=static_oom_rejected` 和
+   `oom.phase=static_preflight`、`oom.type=static_oom_rejected`；为 `unknown` 时保留未知
+   原因，不把结果改写成 `pass`。
+   只有任务/provider 合同明确允许带着该未知项进入动态确认时才继续；没有足够运行参数时，
+   只输出最小 TP 推荐和 `status=recommendation_only`，不占用设备。
 6. 预检和动态前置条件允许启动后，使用任务冻结的 wrapper、设备可见性、端口和 vLLM
    参数拉起服务。按任务约定记录进程、命令摘要、日志和清理边界；服务生命周期由当前
    provider 管理。
 7. 依次执行任务指定的健康接口、`/v1/models`、served model identity 和最小请求验收。
-   只有健康、模型身份和最小请求都通过时，才记录 `service_identity_valid=true`。
+   服务启动或最小请求阶段发生 OOM 时，记录
+   `failure.stage=service_startup`、`failure.type=service_startup_oom` 和
+   `oom.phase=service_startup`、`oom.type=service_startup_oom`；只有健康、模型身份和最小
+   请求都通过时，才记录 `service_identity_valid=true`。
 8. 按 [report-schema.md](references/report-schema.md) 写出
    `deployment_report.json`，保留规范输入、静态预检 artifact、服务检查、错误阶段和
    清理状态。按 provider 合同清理或交付服务，并保持失败现场可追溯。

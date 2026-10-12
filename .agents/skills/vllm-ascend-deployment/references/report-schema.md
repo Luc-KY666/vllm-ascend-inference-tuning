@@ -7,7 +7,7 @@ candidate promotion。
 ```json
 {
   "schema_version": "vllm-ascend-deployment-v1",
-  "status": "<recommendation_only|input_invalid|startup_failed|healthcheck_failed|service_identity_invalid|service_ready|cleanup_failed>",
+  "status": "<recommendation_only|input_invalid|static_oom_rejected|startup_failed|healthcheck_failed|service_identity_invalid|service_ready|cleanup_failed>",
   "model": {
     "model_path": "<deployment-input.json 中的模型路径或标识>",
     "served_model_name": "<deployment-input.json 中的服务身份>",
@@ -61,6 +61,13 @@ candidate promotion。
     "minimal_request_ms": "<数值或 null>",
     "cleanup_ms": "<数值或 null>"
   },
+  "failure": null,
+  "oom": {
+    "detected": false,
+    "phase": "none",
+    "type": null,
+    "evidence": []
+  },
   "error": "<错误阶段和原因，或 null>"
 }
 ```
@@ -71,6 +78,18 @@ candidate promotion。
   通过修改报告字段伪造为已生成。
 - `preflight` 只摘要 `static-oom-report.json`，不得重新计算或把 `reject`、`unknown`
   改成成功。
+- 静态预检 `status=reject` 时，部署报告使用顶层 `status=static_oom_rejected`，并将
+  `failure.stage=static_preflight`、`failure.type=static_oom_rejected` 和
+  `oom.phase=static_preflight`、`oom.type=static_oom_rejected` 写入报告；服务不得启动。
+- 服务启动或最小请求验收阶段检测到 OOM 时，部署报告使用
+  `failure.stage=service_startup`、`failure.type=service_startup_oom` 和
+  `oom.phase=service_startup`、`oom.type=service_startup_oom`；顶层 `status` 使用
+  `startup_failed`。
+- `oom` 始终存在。无 OOM 时使用 `detected=false`、`phase=none`、`type=null` 和空的
+  `evidence`；检测到部署阶段 OOM 时，`evidence` 至少包含当前 attempt 的服务日志或
+  预检报告路径、匹配摘要和时间信息。
+- `failure` 在失败时给出主分类对象，至少包含 `stage`、`type`、`message` 和
+  `artifacts`；`error` 可保留面向人的摘要，但不能替代结构化分类。
 - `service_identity_valid=true` 只能在健康接口、`/v1/models`、served model identity
   和最小请求均通过后记录；它不表示模型质量或性能通过。
 - 未执行的检查使用 `not_applicable` 或 `not_run`，不能填 `true`。
