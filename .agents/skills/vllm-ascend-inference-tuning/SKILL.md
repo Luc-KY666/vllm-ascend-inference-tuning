@@ -124,4 +124,3 @@ ThinkThread 的短 verifier 只访问 worker 预启动并交付的服务接口�
 - 不自动为缺省任务选择优化指标、TP/DP 搜索空间、SLO、候选预算或 provider。
 - 不绕过 GP 设备池、lane lease、物理锁、verifier 临时目录和 output surface。
 - 不以 fixture、模拟响应、静态报告或单次服务健康代替真实部署和性能证据。
-- 不修改 `.codex/`、`.pi/`，不写入模型目录，不自动删除用户现场。

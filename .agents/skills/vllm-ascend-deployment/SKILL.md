@@ -52,7 +52,6 @@ candidate promotion 或最终业务收益。
 
 ## 边界
 
-- 不调用、不复制、不修改本目录外的 `.codex/` 或 `.pi/` 配置。
 - 不在 skill 内实现 Goal Plus Runtime、candidate 管理、搜索调度、设备租约或第二套
   verifier。
 - 不因静态 OOM、启动失败或健康检查失败自动扩大 TP/DP、替换设备或降低上下文要求。

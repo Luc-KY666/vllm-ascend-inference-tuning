@@ -1,8 +1,12 @@
 .agents/
+!.agents/
+!.agents/**
 .aws/
 .git/
 .gp/
 results/
 scripts/
+!.agents/skills/**/scripts/
+!.agents/skills/**/scripts/**
 __pycache__/
 *.py[cod]
