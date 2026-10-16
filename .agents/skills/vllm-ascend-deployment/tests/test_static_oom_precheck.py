@@ -244,10 +244,11 @@ class StaticOomPrecheckTests(unittest.TestCase):
         self.assertEqual(result["status"], "unknown")
         self.assertIn("不能大于", result["message"])
 
-    def test_inconsistent_head_dimension_is_unknown(self) -> None:
+    def test_inconsistent_head_dimension_does_not_block_oom_check(self) -> None:
         result = self.result(**{"model.config.head_dim": 3})
-        self.assertEqual(result["status"], "unknown")
-        self.assertIn("hidden_size", result["message"])
+        self.assertEqual(result["status"], "pass")
+        self.assertEqual(result["current"]["status"], "pass")
+        self.assertEqual(result["current"]["kv_bytes_per_token_per_card"], 48)
 
     def test_unknown_dtype_is_unknown_even_with_explicit_weight(self) -> None:
         result = self.result(**{"runtime.dtype": "int4"})
@@ -259,6 +260,20 @@ class StaticOomPrecheckTests(unittest.TestCase):
         self.assertEqual(result["status"], "unknown")
         self.assertNotEqual(result["status"], "pass")
         self.assertEqual(result["current"]["status"], "missing_parameter")
+
+    def test_recommendation_mode_supplies_explicit_runtime_defaults(self) -> None:
+        payload = copy.deepcopy(self.payload)
+        payload["hardware"]["card_memory_bytes"] = 10000
+        payload["recommendation_mode"] = True
+        payload["runtime"]["tp"] = None
+        payload["runtime"].pop("dp")
+        payload["runtime"].pop("max_num_seqs")
+        payload["runtime"]["max_num_batched_tokens"] = None
+        result = precheck_module.precheck(payload)
+        self.assertEqual(result["status"], "unknown")
+        self.assertEqual(result["recommendation"]["status"], "available")
+        self.assertEqual(result["inputs"]["max_num_batched_tokens"], 4096)
+        self.assertTrue(result["inputs"]["recommendation_mode"])
 
     def test_reject_is_not_rewritten_as_pass(self) -> None:
         result = self.result(**{"model.weight_bytes": 900})

@@ -92,8 +92,6 @@ def _architecture(model: Mapping[str, Any]) -> tuple[dict[str, int] | None, str 
         if hidden_size % attention_heads:
             return None, "hidden_size 不能整除 num_attention_heads，且缺少 head_dim"
         head_dim = hidden_size // attention_heads
-    elif hidden_size != attention_heads * head_dim:
-        return None, "hidden_size 必须等于 num_attention_heads * head_dim"
 
     return {
         "hidden_size": hidden_size,
@@ -333,7 +331,16 @@ def _unknown_result(message: str) -> dict[str, Any]:
 def precheck(payload: Mapping[str, Any]) -> dict[str, Any]:
     model = _mapping(payload.get("model"))
     hardware = _mapping(payload.get("hardware"))
-    runtime = _mapping(payload.get("runtime"))
+    runtime = dict(_mapping(payload.get("runtime")))
+    recommendation_mode = bool(payload.get("recommendation_mode"))
+    if recommendation_mode:
+        for field, default in (
+            ("dp", 1),
+            ("max_num_seqs", 32),
+            ("max_num_batched_tokens", 4096),
+        ):
+            if runtime.get(field) is None:
+                runtime[field] = default
 
     card_memory_bytes = hardware.get("card_memory_bytes")
     device_count = hardware.get("device_count")
@@ -472,6 +479,8 @@ def precheck(payload: Mapping[str, Any]) -> dict[str, Any]:
             "allowed_tp": allowed,
             "official_min_tp": official_min_tp,
             "weight_method": weight_method,
+            "recommendation_mode": recommendation_mode,
+            "max_num_batched_tokens": runtime.get("max_num_batched_tokens"),
         },
         "diagnostics": diagnostics,
     }

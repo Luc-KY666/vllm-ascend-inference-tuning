@@ -1,65 +1,76 @@
 # 部署报告结构
 
-`deployment_report.json` 是一次部署 attempt 的结构化事实记录。输出路径由任务或
-Goal Plus provider 注入；报告不能替代独立 verifier，也不表示压测成功、参数最优或
-candidate promotion。
+`deployment_report.json` 是一次独立 deployment attempt 的最终事实记录。它必须保留
+规范输入、推荐前后配置、各阶段 artifact、服务验收和清理状态。
 
 ```json
 {
-  "schema_version": "vllm-ascend-deployment-v1",
-  "status": "<recommendation_only|input_invalid|static_oom_rejected|startup_failed|healthcheck_failed|service_identity_invalid|service_ready|cleanup_failed>",
+  "schema_version": "vllm-ascend-deployment-report-v1",
+  "status": "<recommendation_only|input_invalid|environment_preflight_failed|resource_preflight_failed|static_oom_rejected|startup_failed|healthcheck_failed|service_identity_invalid|service_ready|cleanup_failed>",
   "model": {
-    "model_path": "<deployment-input.json 中的模型路径或标识>",
-    "served_model_name": "<deployment-input.json 中的服务身份>",
-    "config_digest": "<官方配置摘要>"
+    "model_path": "<deployment.json.model.model_path>",
+    "served_model_name": "<deployment.json.model.served_model_name>",
+    "config_path": "<deployment.json.model.config_path>",
+    "config_digest": "<sha256>"
   },
   "deployment": {
-    "tp": "<实际使用的 TP 或 null>",
-    "dp": "<实际使用的 DP 或 null>",
-    "max_num_seqs": "<实际值或 null>",
-    "max_num_batched_tokens": "<实际值或 null>",
-    "gpu_memory_utilization": "<实际值或 null>",
-    "max_model_len": "<实际值或 null>",
-    "dtype": "<实际值或 null>",
-    "quantization": null
+    "before_resolution": {"tp": null},
+    "resolved": {
+      "tp": 2,
+      "dp": 1,
+      "max_num_seqs": 32,
+      "max_num_batched_tokens": 4096,
+      "gpu_memory_utilization": 0.9,
+      "max_model_len": null,
+      "dtype": "auto",
+      "quantization": null
+    },
+    "resolution": {
+      "mode": "input|auto_recommended|none",
+      "recommended_tp": 2,
+      "source": "<static-oom-report.json>"
+    }
   },
   "resources": {
-    "provider": "<provider 标识>",
-    "devices": ["<本次实际使用的设备>"],
-    "port": "<本次实际使用的端口或 null>",
-    "resource_lock": "<任务允许记录的锁标识或 null>"
+    "visible_devices": ["0", "1"],
+    "selected_devices": ["0", "1"],
+    "port_candidates": [8117],
+    "selected_port": 8117
   },
   "inputs": {
-    "deployment_input": "<attempt-dir>/deployment-input.json",
+    "deployment": "<attempt-dir>/deployment.json",
+    "sandbox_detection": "<attempt-dir>/sandbox-detection.json",
+    "ascend_preflight": "<attempt-dir>/ascend-preflight.json",
+    "npu_resource_probe": "<attempt-dir>/npu-resource-probe.json",
+    "port_resource_probe": "<attempt-dir>/port-resource-probe.json",
     "static_oom_input": "<attempt-dir>/static-oom-input.json",
     "static_oom_report": "<attempt-dir>/static-oom-report.json"
   },
   "preflight": {
-    "status": "<来自 static-oom-report.json 的 status>",
-    "risk_level": "<来自 static-oom-report.json 的 risk_level>",
-    "recommended_tp": "<来自 static-oom-report.json 的推荐值或 null>",
-    "artifact": "<attempt-dir>/static-oom-report.json"
+    "environment": "<pass|failed|not_run>",
+    "static_oom": "<pass|reject|unknown|not_run>",
+    "resources": "<pass|failed|not_run>",
+    "recommended_tp": 2
   },
-  "service_identity_valid": "<true|false>",
+  "service": {
+    "url": "http://127.0.0.1:8117",
+    "pid": 1234,
+    "handoff": "<provider|not_handed_off>"
+  },
   "checks": {
-    "environment": "<passed|failed|not_run>",
     "process": "<passed|failed|not_run>",
     "health": "<passed|failed|not_run>",
     "models_api": "<passed|failed|not_run>",
+    "served_model_identity": "<passed|failed|not_run>",
     "minimal_request": "<passed|failed|not_run>",
     "cleanup": "<passed|failed|not_applicable|not_run>"
   },
+  "service_identity_valid": false,
   "artifacts": {
-    "command": "<命令记录路径>",
-    "server_log": "<服务日志路径>",
-    "pid": "<PID 记录路径>",
-    "raw_checks": "<原始检查路径>"
-  },
-  "timing": {
-    "startup_ms": "<数值或 null>",
-    "healthcheck_ms": "<数值或 null>",
-    "minimal_request_ms": "<数值或 null>",
-    "cleanup_ms": "<数值或 null>"
+    "command": "<path|null>",
+    "server_log": "<path|null>",
+    "pid": "<path|null>",
+    "raw_checks": "<path|null>"
   },
   "failure": null,
   "oom": {
@@ -68,30 +79,28 @@ candidate promotion。
     "type": null,
     "evidence": []
   },
-  "error": "<错误阶段和原因，或 null>"
+  "error": null
 }
 ```
 
-约束：
+## 约束
 
-- `inputs` 中的三个路径必须指向同一次 attempt 的 artifact。不存在的 artifact 不能
-  通过修改报告字段伪造为已生成。
-- `preflight` 只摘要 `static-oom-report.json`，不得重新计算或把 `reject`、`unknown`
-  改成成功。
-- 静态预检 `status=reject` 时，部署报告使用顶层 `status=static_oom_rejected`，并将
-  `failure.stage=static_preflight`、`failure.type=static_oom_rejected` 和
-  `oom.phase=static_preflight`、`oom.type=static_oom_rejected` 写入报告；服务不得启动。
-- 服务启动或最小请求验收阶段检测到 OOM 时，部署报告使用
-  `failure.stage=service_startup`、`failure.type=service_startup_oom` 和
-  `oom.phase=service_startup`、`oom.type=service_startup_oom`；顶层 `status` 使用
-  `startup_failed`。
-- `oom` 始终存在。无 OOM 时使用 `detected=false`、`phase=none`、`type=null` 和空的
-  `evidence`；检测到部署阶段 OOM 时，`evidence` 至少包含当前 attempt 的服务日志或
-  预检报告路径、匹配摘要和时间信息。
-- `failure` 在失败时给出主分类对象，至少包含 `stage`、`type`、`message` 和
-  `artifacts`；`error` 可保留面向人的摘要，但不能替代结构化分类。
-- `service_identity_valid=true` 只能在健康接口、`/v1/models`、served model identity
-  和最小请求均通过后记录；它不表示模型质量或性能通过。
-- 未执行的检查使用 `not_applicable` 或 `not_run`，不能填 `true`。
-- 失败时保留日志、原始检查和错误阶段。重试必须使用新的 attempt 或唯一输出目录，
-  不能覆盖已有报告。
+- `inputs` 中的路径必须指向当前 attempt 的实际 artifact；未执行阶段为 `null`，不得
+  伪造生成成功。
+- `npu_resource_probe` 和 `port_resource_probe` 是本次 attempt 唯一的服务资源事实；它们由
+  [resource-probes.md](resource-probes.md) 在启动前记录一次可用卡 `npu-smi info`、端口探测、
+  原始证据和 agent 判定结果。`sandbox_detection` 中的 `npu-smi` 只用于隔离判定，不得当作
+  可用卡快照。服务启动直接使用资源 probe 返回的设备和端口，不记录或执行二次资源 probe。
+- `input_invalid`、`environment_preflight_failed`、`resource_preflight_failed`、
+  `static_oom_rejected` 和 `recommendation_only` 均不得启动服务。
+- 静态 OOM `reject` 必须记录 `failure.stage=static_preflight`、
+  `failure.type=static_oom_rejected`、`oom.phase=static_preflight` 和
+  `oom.type=static_oom_rejected`。
+- 启动或最小请求阶段 OOM 必须记录 `failure.stage=service_startup`、
+  `failure.type=service_startup_oom`、`oom.phase=service_startup` 和
+  `oom.type=service_startup_oom`。
+- `service_identity_valid=true` 只能在进程、健康接口、`/v1/models`、served model
+  identity 和最小请求全部通过后记录。
+- 失败报告必须包含 `failure.stage`、`failure.type`、`failure.message` 和相关 artifact；
+  OOM evidence 至少包含当前日志或预检报告、匹配摘要和时间信息。
+- 重试使用新的唯一输出目录，不覆盖已有 attempt。

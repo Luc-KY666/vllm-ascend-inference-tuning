@@ -1,214 +1,137 @@
 # 官方测量方法
 
-测量合同规定当前环境安装的官方 `vllm bench serve` 的使用方式。TTFT、TPOT、E2EL 的
-P50/P95 以及 goodput 必须由 vLLM benchmark 计算并写入其 raw result；执行流程负责命令
-构造、执行、核验和归档。
+正式指标必须来自当前环境安装的官方 `vllm bench serve`。本文件规定 CLI 门禁、命令
+构造、raw result 归属、指标核验、OOM 分类和清理；不实现自定义压测器。
 
-## 1. 服务与 CLI 能力
+## CLI 门禁
 
-在允许当前 provider 管理服务的路径，先调用部署 skill 完成服务启动、`/health`、
-`/v1/models`、最小请求和 served model identity 验收。预启动服务路径的操作范围为读取
-已交付的 base URL。
-
-每次 attempt 使用目标环境的：
+每次 attempt 仅在环境预检阶段使用目标环境执行一次（测量阶段复用该 artifact）：
 
 ```text
 vllm bench serve --help=all
 ```
 
-确认当前版本支持任务冻结的所有参数。至少核对：
+至少确认当前版本支持：
 
 ```text
---backend
---model
---tokenizer
---base-url
---endpoint
---dataset-name
---dataset-path
---hf-name / --hf-split / --hf-subset / --hf-output-len
---hf-text-column（如当前版本支持）
---sharegpt-output-len
---custom-output-len
---custom-skip-chat-template 或 --skip-chat-template
---random-input-len / --random-output-len / --random-range-ratio
---num-prompts
---max-concurrency
---num-warmups
---request-rate
---burstiness
---percentile-metrics
---metric-percentiles
---save-result / --result-dir 或等价结果输出选项
+--backend --model --tokenizer --base-url --endpoint
+--dataset-name --dataset-path
+--num-prompts --max-concurrency --num-warmups
+--request-rate --burstiness
+--temperature（Provider 显式提供时）
+--percentile-metrics --metric-percentiles
+--save-result --result-dir 或等价结果输出参数
 ```
 
-启用 goodput 时，额外确认当前版本支持 `--goodput`，并确认输出包含
-`request_goodput` 或版本文档明确规定的等价字段。CLI 能力不完整时，正式测量状态为
-`blocked`。
+还必须确认 workload 适配器要求的参数。Provider 提供 goodput SLO 时，必须确认
+`--goodput` 和 raw JSON 中的 `request_goodput`（或当前版本明确等价字段）。能力缺失时
+使用 `status=blocked`，不得用替代 benchmark 或自定义指标计算。
 
-## 2. 测量入口门禁
+## 命令构造
 
-执行 `vllm bench serve` 前，必须使用目标环境的完整帮助和实际参数解析能力确认：
-
-- backend、model、tokenizer、base URL 和 endpoint；
-- 由[负载契约](workload.md)派生的数据集模式、路径、split、长度和采样参数；
-- 请求数、并发、warmup、到达率和 burstiness；
-- `--percentile-metrics ttft,tpot,e2el`；
-- `--metric-percentiles 50,95`；
-- 任务需要 goodput 时的 `--goodput`；
-- raw JSON 保存路径或结果目录。
-
-测量入口门禁包括固定 workload 重放、P50/P95 输出、启用的 `request_goodput` 输出和
-raw result 唯一性。任一门禁不满足时，本次 attempt 状态为 `blocked`；测量后端保持为
-官方 `vllm bench serve`，结果有效范围限定为当前 workload 合同。
-
-## 3. 命令构造
-
-由任务合同生成一条唯一命令。benchmark backend 使用已交付的 HTTP 服务；`--backend vllm`
-由任务合同按目标环境能力确定：
+由已解析的服务和 workload 输入构造一条唯一命令。服务已经由路径 A 的部署 skill 或
+路径 B 的 Provider 交付；benchmark 不重新推导模型、端口或设备：
 
 ```text
 vllm bench serve \
-  --backend <task-defined-http-backend> \
+  --backend <provider-defined-http-backend> \
   --model <served-model-name> \
-  --tokenizer <task-defined-tokenizer> \
-  --base-url <task-defined-base-url> \
-  --endpoint <task-defined-endpoint> \
-  --num-prompts <task-defined-number> \
-  --max-concurrency <task-defined-concurrency> \
-  --num-warmups <task-defined-warmups> \
-  --request-rate <task-defined-rate> \
-  --burstiness <task-defined-burstiness> \
+  --tokenizer <resolved-tokenizer> \
+  --base-url <base-url> \
+  --endpoint <endpoint> \
+[--temperature <provider-temperature>] \
+  --num-prompts <num-prompts> \
+  --max-concurrency <max-concurrency> \
+  --num-warmups <num-warmups> \
+  --request-rate <request-rate> \
+  --burstiness <burstiness> \
   --percentile-metrics ttft,tpot,e2el \
   --metric-percentiles 50,95 \
   --save-result \
   --result-dir <attempt-dir>
 ```
 
-数据集参数根据[负载契约](workload.md)的 `selection` 和 `dataset.mode` 追加。
-公共命令不包含数据集参数；适配器命令只能使用与当前数据集模式对应的参数分支：
+`--base-url` 必须是 scheme、host 和 port；`--endpoint` 必须是以 `/` 开头且与 backend 匹配的
+HTTP 路径（completions 以 `completions` 结尾，chat 以 `chat/completions` 结尾），并由服务
+验收阶段用最终拼接 URL 校验。只有 Provider 显式冻结了 temperature 才追加该参数；
+省略时不要把 vLLM CLI 的未设置值推断为 `0`，并在 workload artifact 中记录省略。
 
-```text
-# selection=preset, scenario=random
---dataset-name random
---random-input-len <frozen-input-length>
---random-output-len <frozen-output-length>
---random-range-ratio <frozen-range-ratio>
+追加 workload 参数必须严格来自 [workload.md](workload.md) 的同一分支。命令不得同时
+传递两个 skip-chat-template 别名，不得把请求吞吐当作 goodput。
 
-# selection=preset, scenario=long_prefill|long_decode
---dataset-name hf
---dataset-path <resolved-dataset-path>
---hf-name <derived-hf-name>
---hf-split <derived-split>
-[--hf-output-len <derived-output-length>]
-
-# selection=preset, scenario=prefill_decode_balance
---dataset-name sharegpt
---dataset-path <resolved-dataset-path>
-[--sharegpt-output-len <frozen-output-length>]
-
-# selection=hf
---dataset-name hf
---dataset-path <contract-dataset-path>
---hf-name <contract-hf-name>
---hf-split <contract-split>
-[--hf-subset <contract-subset>]
-[--hf-output-len <contract-output-length>]
-[--hf-text-column <contract-text-column>]
-
-# selection=custom
---dataset-name custom
---dataset-path <contract-custom-jsonl>
-[--custom-output-len <contract-output-length>]
-[--custom-skip-chat-template | --skip-chat-template]
-```
-
-`selection=custom` 时，命令不包含 `--hf-name`、`--hf-split`、`--hf-subset`、
-`--hf-output-len` 或 `--sharegpt-output-len`。`skip_chat_template` 的命令参数名由
-当前 `vllm bench serve --help=all` 决定，两个别名不能同时传递。CLI 不支持合同冻结的
-适配器参数时，attempt 状态为 `blocked`。
-
-在命令执行前，数据集准备阶段必须已经完成并记录：
-
-- `selection`、`scenario` 和 `dataset.mode`；
-- 解析后的 dataset path、dataset name、split、revision/hash 和有效样本数；
-- 数据集是复用、下载、缓存解析还是本地 custom 文件；
-- 适配器专用参数和格式校验结果。
-
-Hugging Face 数据集的下载缓存位于合同指定的 `dataset_root` 或 provider 冻结的缓存
-根目录下；命令使用解析后的本地路径或合同指定的远程数据集路径。Custom 命令使用
-本地 JSONL 路径，不执行远程下载。数据集准备未完成时不执行 benchmark 命令。
-
-任务提供 goodput SLO 时，按 vLLM 当前 CLI 语法传递已冻结的约束：
+Provider 只提供部分 goodput 约束时，仅传递实际提供的字段，例如：
 
 ```text
 --goodput ttft:<milliseconds> tpot:<milliseconds> e2el:<milliseconds>
 ```
 
-goodput 命令只包含任务实际提供的约束；未提供的约束保持缺省缺失状态。自然语言中的
-`TPOP` 统一按官方字段 `tpot` 处理。未提供 goodput SLO 时，命令不包含
-`--goodput`，最终报告状态为 `not_requested`。
+未提供任何 goodput 约束时不传 `--goodput`，最终报告为
+`goodput.status=not_requested`。
 
-## 4. 执行与结果选择
+## 执行上下文、执行和 raw result
 
-1. 创建 provider 允许的独立 attempt 目录，记录服务接口、配置摘要、workload 摘要和
-   运行前该目录内已有的 JSON 文件集合。
-2. 记录完整 benchmark command、vLLM/vLLM-Ascend 版本、CLI 能力检查摘要和开始时间。
-3. 执行一次 `vllm bench serve`。诊断复测由任务合同单独授权，并使用新的 attempt。
-4. 从本次命令开始后新建或更新的结果中筛选可读、非空、可解析的 JSON；最终报告、临时
-   文件和日志不属于 raw result 候选。
-5. raw result 候选数为一，并且模型身份、请求数、完成数、失败数、数据集摘要、到达率、
-   并发和结果时间等可核对字段与本次冻结输入一致。
-6. 使用官方 raw JSON 中的 P50/P95 字段填充报告。指标来源限定为官方 raw JSON；日志、
-   SSE、单调时间戳、请求事件数、吞吐和其他 percentile 不参与缺失指标推导。
-7. 启用 goodput 时，raw JSON 提供合法的 `request_goodput`；缺失、为 `null` 或无法证明
-   来自本次命令时，报告 `goodput.status=missing` 并将 attempt 判为失败。
-8. 未启用 goodput 时，报告 `goodput.status=not_requested`，`request_goodput` 保持
-   `null`；请求吞吐和 token 吞吐不映射为 goodput。
+1. 只在 [ascend-probes.md](ascend-probes.md) 确定的执行上下文中运行命令。路径 A 复用
+   部署报告的提权上下文和已验收服务；路径 B 复用本次 benchmark 的提权上下文。不得在
+   测量阶段重新探测沙箱、NPU 或 Provider 端口。
+2. 在执行前建立独立 attempt 目录，并记录目录中已有的 JSON 文件集合。
+3. 记录完整命令、vLLM/vLLM-Ascend 版本、CLI 能力摘要、服务身份和开始时间。
+4. 正式执行一次 `vllm bench serve`。warmup 不计入正式请求统计；诊断复测必须使用新的
+   attempt 目录。
+5. 只从本次命令开始后新建或更新的 JSON 中选择 raw result；`benchmark_result.json`、
+   临时文件和日志不是 raw result 候选。
+6. raw result 候选必须唯一、非空、可解析，并且模型身份、请求数、完成/失败数、数据集
+   摘要、并发和到达率与冻结输入一致。零个候选报告 `raw_result_not_found`，多个候选
+   报告 `raw_result_ambiguous`。
+7. 保存 raw JSON 路径和 SHA256；不覆盖既有 attempt 的 artifact。
 
-## 5. 样本与失败规则
+## 指标门禁
 
-- warmup 与正式请求分离，正式统计只覆盖合同定义的正式请求。
-- 失败、超时、服务断流和请求数不足保留在 raw result 和最终报告中。
-- 每次测量使用一次合同定义的请求集合；失败样本保留，缺失 percentile 保持缺失。
-- 固定多轮任务使用官方工具生成合同要求的结果，百分位口径沿用官方输出。
-- OOM 只在 `vllm bench serve` 已进入正式请求执行后进行分类。可识别的证据包括
-  `out of memory`、`OutOfMemoryError`、`MemoryError`、`Cannot allocate memory`、`ACLRT`
-  内存不足及目标运行时明确表示显存不足的等价信息；只记录当前 benchmark attempt
-  产生的服务日志、benchmark 日志或进程 artifact 路径和证据摘要。
-- 正式请求期间发生 OOM 时，报告 `failure.stage=benchmark`、
-  `failure.type=runtime_oom`、`oom.phase=benchmark` 和 `oom.type=runtime_oom`。该分类
-  优先于通用的 `benchmark_incomplete` 或 `service_error`。
-- 静态预检、服务启动和最小请求验收构成部署阶段。正式 benchmark 的前置条件为部署阶段
-  完成；部署阶段 OOM 的分类和证据写入 `deployment_report.json`。
-- OOM attempt 终止后不得通过修改 TP、DP、并发、上下文或 workload 自动重试；如任务合同
-  授权诊断复测，必须创建新的 attempt。
-- OOM 失败时，TTFT、TPOT、E2EL 和吞吐字段全部为 `null`；启用 goodput 但没有可验证的
-  官方结果时使用 `goodput.status=missing`。请求计数、OOM 证据和 raw result（若存在）
-  仍然保留，清理结果单独写入 `cleanup.status`。
-- 未发现可验证 OOM 证据时不得标记为 `runtime_oom`；按实际阶段报告通用服务、环境或
-  benchmark 错误。
+最终报告只接受 raw JSON 已计算的：
 
-## 6. 指标门禁
+- TTFT P50/P95；
+- TPOT P50/P95；
+- E2EL P50/P95；
+- Provider 请求 goodput SLO 时的 `request_goodput`，单位 `req/s`。
 
-最终报告只接受官方工具本次输出的：
+指标缺失、非有限、请求不完整、请求计数不一致或 raw result 无法归属当前命令时，报告
+使用非 `success` 状态，性能字段为 `null`。不得从请求事件、日志、SSE、部分样本或自定义
+公式补齐百分位。
 
-- TTFT：P50、P95；
-- TPOT：P50、P95；
-- E2EL：P50、P95；
-- goodput：任务启用 SLO 时的 `request_goodput`，单位 `req/s`。
+goodput 状态规则：
 
-必需指标缺失、数值非法、请求未完成或 raw result 归属不唯一时，`status` 映射为非
-`success` 状态；缺失或不可信的性能字段写 `null`。请求计数沿用官方结果中的完整
-统计，不移除失败样本，也不以 `0` 补齐缺失值。
+- `reported`：至少一个 SLO 已传入，raw JSON 有合法 `request_goodput`；
+- `not_requested`：未提供 SLO，命令未传 `--goodput`；
+- `missing`：要求 goodput，但字段缺失、为 `null`、不可解析或无法证明属于本次命令。
 
-## 7. 生命周期与清理
+## OOM 和其他失败
 
-- git_worktree/direct provider 可在同一持锁 verifier 中依次完成部署、benchmark 和清理；
-- ThinkThread 或预启动 provider 只能访问已交付服务接口；
-- benchmark 结束后按部署/provider 合同清理或交付服务；
-- 清理失败保留 raw result 和日志，并在报告中写明 `cleanup.status`；性能状态与清理
-  状态分别记录。
+只在 `vllm bench serve` 已进入正式请求阶段后判定 runtime OOM。当前 attempt 的 benchmark
+日志、服务日志或进程 artifact 中出现下列证据时可分类：`out of memory`、
+`OutOfMemoryError`、`MemoryError`、`Cannot allocate memory`、`ACLRT` 显存不足或运行时明确
+表示显存不足的等价信息。
 
-profile、编译、服务启动和 warmup 归入独立诊断或准备阶段，不计入官方正式 benchmark
-指标。
+正式请求期间 OOM 必须报告：
+
+```text
+status=error
+failure.stage=benchmark
+failure.type=runtime_oom
+oom.detected=true
+oom.phase=benchmark
+oom.type=runtime_oom
+```
+
+OOM 证据至少包含当前 attempt artifact 路径、匹配摘要和时间信息。未找到可验证证据时不
+得标记 `runtime_oom`。OOM attempt 的 TTFT、TPOT、E2EL、吞吐和 goodput 全部保持 `null`；
+不得通过修改 TP、DP、并发、上下文或 workload 自动重试。
+
+服务健康、模型身份和最小请求阶段的 OOM 归入部署报告；环境、CLI、workload、服务断流、
+请求不完整和清理问题按实际阶段记录，并保留已有 raw artifact。
+
+## 生命周期和清理
+
+- 路径 A 的服务由部署/provider 合同决定清理时机；当前 skill 至少记录清理结果。
+- 路径 B 的服务不由当前 skill 停止或修改。
+- 清理失败写入 `cleanup.status=failed` 和错误 artifact，但不把已完成的性能结果改写为
+  `success` 以外的状态，除非清理本身使报告无法交付。
+- 无论命令成功或失败，都必须尝试写出可解析的 `benchmark_result.json`。
