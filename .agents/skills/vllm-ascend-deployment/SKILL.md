@@ -1,13 +1,17 @@
 ---
 name: vllm-ascend-deployment
-description: 在外部 Provider 冻结的模型、设备、端口和输出合同内，完成 vLLM-Ascend 环境预检、静态 OOM 检查、服务启动、健康验收和部署报告。
+description: 在外部 Provider 冻结的模型、设备、端口和输出合同内，完成单机或多机 Docker vLLM-Ascend 环境预检、服务启动、健康验收和部署报告。
 ---
 
 # vLLM-Ascend 部署技能
 
-本 skill 负责一次独立部署 attempt。Provider 提供模型、可见 NPU、端口候选、运行参数
-和唯一输出目录；本 skill 不下载模型、不扫描未授权资源、不创建租约，
-也不负责搜索调度或性能评估。
+本 skill 负责一次独立部署 attempt。Provider 提供模型、设备、端口、运行参数和唯一输出目录；
+本 skill 不下载模型、不扫描未授权资源、不创建租约，也不负责搜索调度或性能评估。部署方式
+分为三类：
+
+- `single-node deployment`：模型服务、NPU 设备、端口和运行时都位于同一个目标主机；直接在该主机的执行环境中启动和验收 vLLM-Ascend 服务，不涉及跨节点通信、SSH 控制或 Docker 编排。
+- `multi-node deployment`：模型服务分布在多个目标主机，采用普通 vLLM-Ascend DP/TP 部署且不进行 Prefill/Decode 分离；通过 SSH 连接各目标宿主机并执行 Docker，在所有节点完成协同启动、集群 readiness 和统一业务验收。
+- `multi-node PD-disaggregated deployment`：Prefill、Decode、KV Transfer/Mooncake 和 Proxy 服务分布在多个目标主机；通过 SSH 连接各目标宿主机并执行 Docker，按服务依赖顺序启动，并对完整的 Prefill-to-Decode 请求链路进行 readiness 和业务验收。
 
 推荐阶段不启动服务、不占用 NPU 或端口。得到可用的最小 TP 后，skill 将推荐值原子写回
 同一个 `deployment.json`，重新校验并继续部署。
@@ -27,6 +31,11 @@ Bash 环境中探测和执行。
 
 输入字段、默认值和状态边界见 [input-contract.md](references/input-contract.md)。
 
+多机部署的主体输入由 Provider 以拓扑计划提供，至少包括镜像、节点、SSH 连接信息、数据面
+地址、NPU 列表、服务角色、最终 argv、挂载、设备、端口、依赖和 readiness。用户不需要提供
+`deployment_id`；Skill 从当前 attempt 目录生成内部实例标识，并将其用于容器名、标签和报告。
+多机计划使用当前 attempt 目录，不再使用旧的 `.boom-skill/deployments/` 路径。
+
 ## 执行权限
 
 Ascend 驱动设备节点和 wildcard TCP bind 可能不暴露给默认沙箱。每个 attempt 在执行
@@ -37,6 +46,10 @@ skill 必须默认通过执行平台的 `sandbox_permissions=require_escalated` 
 资源预检、端口资源预检和 `vllm serve` 均复用同一个提权上下文，不重新检测或再次请求提权。
 未检测到隔离时，后续阶段复用当前上下文执行。平台拒绝、提权失败或状态无法确认时写出
 结构化 preflight failure，不把沙箱内的 `EPERM`、驱动错误或零设备数当作真实资源结论。
+
+多机部署还必须确认 Agent 具备到每个目标宿主机的非交互式 SSH 能力。所有宿主机路径、
+设备、Docker、镜像、容器和日志操作都通过对应 SSH 连接执行；不得在 Agent/Pi 容器中启动
+或使用隔离的 `dockerd`。控制端的本地 NPU 探测不能替代目标节点的远端探测。
 
 预检参数和运行时事实必须按以下兼容性规则处理：
 
@@ -51,7 +64,10 @@ skill 必须默认通过执行平台的 `sandbox_permissions=require_escalated` 
   `__file__` 或 `importlib.util.find_spec`，不要在 `site-packages` 下执行 `find`；可编辑安装可能
   将源码解析到 `/vllm-workspace` 等目录。
 
-## 执行流程
+## 单机执行流程
+
+以下步骤仅适用于 `execution.deployment_type` 为 **single-node deployment**；多机请求改用下面的
+“多机 Docker 执行流程”，不要把单机本地探测结果套用到远端节点。
 
 1. 在 attempt 开始时调用 [ascend-probes.md](references/ascend-probes.md) 完成唯一一次
    沙箱检测并确定后续执行上下文；检测到隔离或状态不确定时，立即使用执行平台的提权
@@ -98,6 +114,49 @@ skill 必须默认通过执行平台的 `sandbox_permissions=require_escalated` 
     保留 `deployment.json`、静态 OOM、环境、资源、服务和清理 artifact。服务成功时将
     URL、模型身份、设备、端口和进程交还 Provider。
 
+## 多机 Docker 执行流程
+
+当 `execution.deployment_type` 为 `multi-node deployment` 或 `multi-node PD-disaggregated deployment` 时，
+使用本节流程；不要执行上面的单机本地 `npu-smi`、本地端口或本地 `vllm serve` 流程。
+
+用户提出“普通多机 vLLM”或仅说“多机部署”时，使用 **multi-node deployment**，读取
+[references/multi-node/multi-node-deployment.md](references/multi-node/multi-node-deployment.md)。
+用户明确提出“Prefill/Decode”“PD 分离”“Mooncake”或“KV Transfer”等关键词时，使用
+**multi-node PD-disaggregated deployment**，读取
+[references/multi-node/multi-node-PD-disaggregated-deployment.md](references/multi-node/multi-node-PD-disaggregated-deployment.md)。
+
+1. 读取 [multi-node/common.md](references/multi-node/common.md) 和上面对应的部署说明，
+   将 Provider 提供的节点、服务、挂载、设备、端口、依赖和最终 argv 组织成当前 attempt
+   的 `deployment-plan.json`。计划必须在任何远端变更前落盘。
+2. 通过每个节点的 SSH 执行只读预检：确认宿主机身份、Docker 权限、镜像、固定 Ascend
+   驱动挂载、NPU 设备、模型目录、通信网卡和端口。任一节点的固定挂载、设备或模型路径
+   不满足时立即停止，不启动任何容器。
+3. 使用远端预检事实执行静态 OOM 和并行度检查。**multi-node deployment** 按每节点 TP、跨节点 DP
+   计算；**multi-node PD-disaggregated deployment** 按 Prefill、Decode 服务分别检查。不要把控制端可见设备数当成远端
+   设备数，也不要自动扩大 TP、替换节点或等待资源释放。
+4. 按模式文档执行远端容器启动：
+   - **multi-node deployment**：先启动 Master，只确认容器和主进程没有立即退出，随后立即并行启动
+     所有 Worker；不能用 Master readiness 阻塞 Worker；
+   - **multi-node PD-disaggregated deployment**：先启动 KV Transfer/Mooncake，再启动 Prefill/Decode，最后启动 Proxy，
+     依赖层 readiness 通过后才能进入下一层。
+5. 每个容器都必须使用计划中的稳定名称、`boom.skill.*` 所有权标签、固定驱动挂载、
+   NPU 设备、模型挂载和服务 argv。启动后先通过 SSH 执行 `docker inspect`，核对实际
+   挂载和设备与计划一致；不一致时停止当前 attempt 的后续启动并进入清理。
+6. 按 [multi-node/readiness-and-validation.md](references/multi-node/readiness-and-validation.md)
+   执行角色级 readiness、模型身份和最小业务请求。只因容器存在、端口监听或单个服务
+   健康就绪都不能报告成功；DP/TP 必须验证全部 rank，PD 必须验证完整 Proxy 到 P/D
+   的请求链路和 KV 传输。
+7. 发生 graph capture 失败时，按对应模式对全部相关 rank 一致增加 `--enforce-eager`，
+   最多执行一次完整重启；参数错误、HCCL/NPU 错误、模型路径错误和 connector 错误
+   不得通过无限 readiness 轮询掩盖。
+8. 将脱敏远端命令、时间戳、节点事实、容器 inspect、readiness、业务请求和清理结果
+   写入 `<attempt-dir>/commands.log` 与统一的 `deployment_report.json`。旧的
+   `.boom-skill/deployments/<id>/result.json` 不再创建。
+
+多机服务成功后，报告中的 `service.url`、模型身份和公共入口交还 Provider；多机服务
+部分启动、rank 不完整、Proxy 不可用或清理失败时必须分别报告，不得转换成单机的
+`service_ready`。
+
 ## 参考资料
 
 - [输入契约](references/input-contract.md)：Provider 输入、默认值、校验和 deployment.json。
@@ -105,6 +164,10 @@ skill 必须默认通过执行平台的 `sandbox_permissions=require_escalated` 
 - [资源预检](references/resource-probes.md)：空闲 NPU 和 Provider 端口检查。
 - [静态 OOM 规则](references/static-oom.md)：容量判定和最小 TP 推荐。
 - [部署报告结构](references/report-schema.md)：一次部署 attempt 的输出合同。
+- [多机公共规则](references/multi-node/common.md)：SSH、Docker、挂载、标签、计划和清理。
+- [multi-node deployment](references/multi-node/multi-node-deployment.md)：普通多机 vLLM 启动与验证。
+- [multi-node PD-disaggregated deployment](references/multi-node/multi-node-PD-disaggregated-deployment.md)：Prefill/Decode、KV Transfer 和 Proxy。
+- [多机 readiness](references/multi-node/readiness-and-validation.md)：角色级健康和业务验证。
 - [输入契约脚本](scripts/input_contract.py)：生成和更新 `deployment.json`。
 - [环境预检脚本](scripts/ascend_preflight.py)：检查当前 Bash 中的 Ascend 环境。
 
@@ -119,3 +182,7 @@ skill 必须默认通过执行平台的 `sandbox_permissions=require_escalated` 
   的端口。
 - `service_ready` 只表示部署层健康、模型身份和最小请求通过，不表示压测成功或参数最优。
 - 不实现外部 Provider 的资源租约、搜索调度、candidate 管理或独立 verifier。
+- 多机部署的远端资源结论只来自计划节点上的 SSH 预检；不等待设备释放、不轮询，
+  也不回退到控制端或 Agent 容器内的 Docker daemon。
+- 多机容器清理只处理同时匹配当前 attempt 所有权标签和计划中容器名的对象，禁止使用
+  `pkill`、宽范围 `docker rm` 或通过端口占用者推断所有权。

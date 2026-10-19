@@ -6,7 +6,11 @@
 ```json
 {
   "schema_version": "vllm-ascend-deployment-report-v1",
-  "status": "<recommendation_only|input_invalid|environment_preflight_failed|resource_preflight_failed|static_oom_rejected|startup_failed|healthcheck_failed|service_identity_invalid|service_ready|cleanup_failed>",
+  "status": "<recommendation_only|input_invalid|environment_preflight_failed|resource_preflight_failed|static_oom_rejected|startup_failed|healthcheck_failed|service_identity_invalid|partially_started|service_ready|cleanup_failed>",
+  "execution": {
+    "deployment_type": "<single-node deployment|multi-node deployment|multi-node PD-disaggregated deployment>",
+    "transport": "<local|ssh>"
+  },
   "model": {
     "model_path": "<deployment.json.model.model_path>",
     "served_model_name": "<deployment.json.model.served_model_name>",
@@ -37,6 +41,7 @@
     "port_candidates": [8117],
     "selected_port": 8117
   },
+  "topology": null,
   "inputs": {
     "deployment": "<attempt-dir>/deployment.json",
     "sandbox_detection": "<attempt-dir>/sandbox-detection.json",
@@ -70,7 +75,11 @@
     "command": "<path|null>",
     "server_log": "<path|null>",
     "pid": "<path|null>",
-    "raw_checks": "<path|null>"
+    "raw_checks": "<path|null>",
+    "deployment_plan": "<path|null>",
+    "commands_log": "<path|null>",
+    "remote_preflight": "<path|null>",
+    "container_inspect": "<path|null>"
   },
   "failure": null,
   "oom": {
@@ -91,6 +100,11 @@
   [resource-probes.md](resource-probes.md) 在启动前记录一次可用卡 `npu-smi info`、端口探测、
   原始证据和 agent 判定结果。`sandbox_detection` 中的 `npu-smi` 只用于隔离判定，不得当作
   可用卡快照。服务启动直接使用资源 probe 返回的设备和端口，不记录或执行二次资源 probe。
+- `execution.deployment_type` 为多机部署类型时，`topology` 必须保留计划中的节点、服务、角色、
+  SSH 目标、远端设备、端口和公共入口；远端预检、`docker inspect`、脱敏命令和日志路径
+  必须通过 `artifacts` 引用当前 attempt 的实际 artifact。
+- 多机部署不使用控制端的 `npu_resource_probe` 作为远端资源事实；每个节点的 SSH、Docker、
+  固定 Ascend 挂载、NPU 和端口检查必须记录在 `remote_preflight` artifact 中。
 - `input_invalid`、`environment_preflight_failed`、`resource_preflight_failed`、
   `static_oom_rejected` 和 `recommendation_only` 均不得启动服务。
 - 静态 OOM `reject` 必须记录 `failure.stage=static_preflight`、
@@ -101,6 +115,8 @@
   `oom.type=service_startup_oom`。
 - `service_identity_valid=true` 只能在进程、健康接口、`/v1/models`、served model
   identity 和最小请求全部通过后记录。
+- `partially_started` 表示部分远端服务已启动但 rank、依赖层、Proxy、完整业务链路或清理
+  未完成；不能因为任一单个容器健康而记录 `service_ready`。
 - 失败报告必须包含 `failure.stage`、`failure.type`、`failure.message` 和相关 artifact；
   OOM evidence 至少包含当前日志或预检报告、匹配摘要和时间信息。
 - 重试使用新的唯一输出目录，不覆盖已有 attempt。
