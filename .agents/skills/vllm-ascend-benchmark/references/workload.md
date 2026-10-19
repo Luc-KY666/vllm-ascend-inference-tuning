@@ -1,7 +1,8 @@
 # 压测负载契约
 
 Provider 冻结一次 attempt 的负载选择、数据集、请求窗口和 benchmark 模式。模型服务、
-设备、端口和输出目录由 Provider 的服务输入冻结；本契约不推导宿主默认值。
+设备、端口和输出目录由 Provider 的服务输入冻结；除下文明确列出的可选字段默认值外，
+本契约不推导其他宿主默认值。
 
 ## 负载选择
 
@@ -160,7 +161,7 @@ Provider 必须冻结以下字段：
     "rounds": "<positive integer>"
   },
   "generation": {
-    "temperature": "<contract value; explicit or null>",
+    "temperature": "<显式值 | null(不传参) | 未提供时默认 0>",
     "top_p": "<contract value>",
     "stream": "<contract value>",
     "include_usage": "<contract value>"
@@ -178,3 +179,16 @@ goodput 约束只记录 Provider 实际提供的字段。合同不完整、数�
 错误或 CLI 不支持所需适配器参数时，不进入正式 benchmark，并在最终报告中使用
 `invalid` 或 `blocked`。`temperature=null` 表示命令不传 `--temperature`，由服务端决定默认值；
 不得把它解释成 `0`。
+
+Provider 未显式冻结以下可选字段时使用默认值，并在 workload artifact 的
+`resolution.defaulted_fields` 中记录：
+
+- `temperature=0`：显式传入 `--temperature 0`，贪心且可重复；
+- `num_warmups=10`：warmup 请求不计入正式请求统计；
+- `burstiness=1.0`；
+- `output_len=128`：仅在 `selection=preset` 且 `scenario=long_prefill` 时作为
+  `--hf-output-len` 的默认值；其余 selection/scenario 不设置默认 `output_len`（保持
+  `null`），由 Provider 显式提供或遵循 CLI 与数据集默认。
+
+`temperature` 默认值仅覆盖“Provider 未提供该字段”的情况；Provider 显式冻结为 `null`
+时仍表示不传 `--temperature`，由服务端决定。

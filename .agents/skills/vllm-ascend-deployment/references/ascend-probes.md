@@ -56,10 +56,11 @@ set -euo pipefail
 PYTHON_BIN="$(command -v python3 || command -v python)"
 VLLM_BIN="$(command -v vllm)"
 test -x "$PYTHON_BIN" && test -x "$VLLM_BIN"
-PROTECTED_ENV_JSON='{"ASCEND_RT_VISIBLE_DEVICES":"<provider-value>","TMPDIR":"<attempt-tmp>"}'
+PROTECTED_ENV_JSON='{"ASCEND_RT_VISIBLE_DEVICES":"<provider-value>","TMPDIR":"<serve-tmpdir>"}'
 "$PYTHON_BIN" <skill-root>/scripts/ascend_preflight.py \
   --protected-env "$PROTECTED_ENV_JSON" \
   --timeout 30 \
+  --serve-help-output <attempt-dir>/vllm-serve-help-all.txt \
   --output <attempt-dir>/ascend-preflight.json
 ```
 
@@ -67,6 +68,17 @@ PROTECTED_ENV_JSON='{"ASCEND_RT_VISIBLE_DEVICES":"<provider-value>","TMPDIR":"<a
 之类的文件路径不会被脚本读取。变量值必须在同一个 shell/session 中序列化并原样传入，JSON
 解析失败时直接记录结构化输入错误，不先尝试路径再重试。空对象 `{}` 仅表示让脚本从当前
 进程读取默认受保护变量，不能用来绕过 Provider 的环境快照校验。
+
+`--serve-help-output` 将本次 attempt 唯一一次 `vllm serve --help=all` 的完整 stdout 落盘为
+文件 artifact，供后续阶段解析 serve 参数时复用；JSON 报告只保留输出尾部用于快速诊断，
+不得因尾部截断而重新执行 help。
+
+`TMPDIR` 的取值受 vLLM API server 的 ZMQ IPC socket 约束：API server 启动时会在 TMPDIR
+下创建以 UUID 命名的 ZMQ IPC socket（与 EngineCore 进程通信），完整路径
+`TMPDIR + "/" + UUID` 不得超过 `sockaddr_un.sun_path` 的 107 字符上限。attempt 目录位于
+深层仓库路径下时，目录内 tmp 加上 36 字符 UUID 通常必然超限；此时必须优先在 attempt
+目录之外创建短路径临时目录（例如 `/tmp/<短 attempt 标识>`）作为 serve 运行时 TMPDIR，
+启动前校验 `len(TMPDIR) + 1 + 36 <= 107`，并在受保护环境快照与部署报告中记录该选择。
 
 `ascend_preflight.py` 通过该 shell 的当前 `PATH` 解析 `vllm`。命令不存在时产生结构化
 的 `vllm_executable_missing`，而不是从 Provider 输入中读取替代路径。Python 解析顺序
@@ -80,7 +92,8 @@ PROTECTED_ENV_JSON='{"ASCEND_RT_VISIBLE_DEVICES":"<provider-value>","TMPDIR":"<a
 - `torch.npu.is_available()` 为真且设备数量大于零；
 - `libatb.so` 可由 `ctypes.CDLL` 加载；
 - 当前 PATH 中的 `vllm` 成功执行一次 `vllm serve --help=all`；不得追加裸 `--help` 或重复
-  调用。CLI 输出 artifact 供后续部署阶段复用。
+  调用。完整输出经 `--serve-help-output` 落盘为文件 artifact，供后续部署阶段复用；JSON
+  报告中的尾部摘要不用于参数解析。
 - `vllm` 和 `vllm-ascend` 版本通过 `importlib.metadata.version` 读取，模块源码位置通过
   `module.__file__` 或 `importlib.util.find_spec` 读取。editable install 可能位于
   `/vllm-workspace`，不得在 `site-packages` 下执行 `find`，也不得访问模块 `__version__`。

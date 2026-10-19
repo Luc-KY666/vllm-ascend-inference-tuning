@@ -30,15 +30,15 @@ test -r /dev/davinci_manager
 device_node_rc=$?
 npu_smi_output="$(npu-smi info 2>&1)"
 npu_smi_rc=$?
-ss_output="$(ss -H -ltn 2>&1)"
-ss_rc=$?
+port_probe_output="$(<agent 选择的、当前上下文可用的只读端口探测命令，如 netstat -ltn、ss -H -ltn、lsof -nP -iTCP -sTCP:LISTEN 或 python socket 探测> 2>&1)"
+port_probe_rc=$?
 set -e
 ```
 
 上面的 `npu-smi info` 仅属于路径 B 的一次沙箱隔离检测。路径 A 完全复用部署报告，不再
 采集 NPU；路径 B 的后续服务验收、数据集校验和正式 benchmark 也不得再次调用 `npu-smi`。
 
-将 `device_node_rc`、`npu_smi_rc`、`ss_rc`、命令摘要和输出尾部写入
+将 `device_node_rc`、`npu_smi_rc`、`port_probe_rc`、实际使用的探测命令摘要和输出尾部写入
 `sandbox-detection.json`。满足下列任一条件时判定为 `sandbox_isolation_detected` 或
 `sandbox_isolation_unknown`：
 
@@ -87,13 +87,15 @@ PYTHON_BIN="$(command -v python3 || command -v python)"
 VLLM_BIN="$(command -v vllm)"
 test -x "$PYTHON_BIN" && test -x "$VLLM_BIN"
 "$PYTHON_BIN" -c 'import vllm'
-"$VLLM_BIN" bench serve --help=all
+"$VLLM_BIN" bench serve --help=all > <attempt-dir>/bench-serve-help-all.txt 2>&1
 ```
 
 路径 A 不重新探测部署环境、NPU 或 vLLM serve；只在部署报告标记环境和资源通过后，于同一
-`execution_context` 中执行一次 `vllm bench serve --help=all`，并将结果写入
-`benchmark-preflight.json`。Provider 不需要提供 Python、vLLM 或 HTTP 客户端路径；路径
-由当前 Bash 的 `PATH` 解析，命令不存在时产生结构化失败。
+`execution_context` 中执行一次 `vllm bench serve --help=all`，完整输出落盘为
+`<attempt-dir>/bench-serve-help-all.txt`，能力检查结果写入 `benchmark-preflight.json`。
+后续参数解析必须基于这份完整文件，不得因截断而重新执行 help。Provider 不需要提供
+Python、vLLM 或 HTTP 客户端路径；路径由当前 Bash 的 `PATH` 解析，命令不存在时产生结构化
+失败。
 
 版本记录使用 `importlib.metadata.version("vllm")` 和
 `importlib.metadata.version("vllm-ascend")`；editable install 的源码位置使用模块
@@ -104,8 +106,9 @@ test -x "$PYTHON_BIN" && test -x "$VLLM_BIN"
 
 两条路径都必须确认：
 
-- `vllm bench serve --help=all` 暴露 workload、percentile、goodput 和 raw-result 所需
-  参数；
+- `vllm bench serve --help=all` 的完整输出（`<attempt-dir>/bench-serve-help-all.txt`）
+  暴露 workload、percentile、goodput 和 raw-result 所需参数，能力解析必须基于这份完整
+  文件；
 - attempt 输出目录存在、可写且不包含本次命令之前遗留的同名 raw result；
 - 用于服务验收的 HTTP 客户端可在同一执行上下文访问 Provider 服务 URL；
 - 路径 A 的部署报告为 `service_ready`，且 `selected_devices`、`selected_port` 与部署

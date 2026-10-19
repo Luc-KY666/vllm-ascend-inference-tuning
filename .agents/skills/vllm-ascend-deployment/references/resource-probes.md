@@ -40,6 +40,13 @@ Provider `visible_devices` 中的设备为 `free`、`busy` 或 `unknown`，并�
 `TP * DP` 张 free 卡可以写入 `selected_devices`；数量不足时使用
 `failure_type=insufficient_available_devices`。
 
+本次探测是一次性的时间点判定，其结论对当前 attempt 是最终的：当 Provider 可见卡中
+free 数量不足 `TP * DP`（含判定为 busy 或 unknown 的卡）时，立即写出
+`resource_preflight_failed` 失败报告并退出当前 attempt。禁止等待、轮询、重新探测或
+以任何形式挂起以等待设备释放——busy/unknown 的卡不会被重新探测，本流程中不存在
+“等待释放后继续”的阶段；若要在其他工作负载退出后重试，必须使用新的唯一输出目录
+发起新 attempt 并重新执行完整的资源预检。
+
 ## 端口检查
 
 只按 Provider 提供的 `port_candidates` 顺序检查；`preferred_port` 如果存在则优先检查，

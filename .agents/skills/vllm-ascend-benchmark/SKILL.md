@@ -27,15 +27,18 @@ Provider 选择以下一种服务路径，并同时提供公共负载输入。
 
 本路径调用[vLLM-Ascend 部署技能](../vllm-ascend-deployment/SKILL.md)完成服务启动、
 健康检查、模型身份验收和最小请求验收。部署成功后，当前 skill 接管该服务的 benchmark
-阶段和按部署合同约定的清理；部署失败时不执行压测。
+阶段和按部署合同约定的清理；部署失败时不执行压测。部署报告为
+`resource_preflight_failed`（Provider 可见卡中空闲数量不足 `TP * DP`，或端口不可用）时，
+本次 benchmark attempt 必须立即写出失败报告（`status=error`，性能字段为 `null`）并退出，
+同样不得等待设备释放、不得轮询或重新探测 NPU/端口；设备释放后的重试属于使用新输出
+目录的新 attempt。
 
-路径 A 的服务生命周期必须由本次 attempt 持有的长生命周期 shell 管理。调用部署 skill
-时，部署、服务验收和后续 benchmark 必须在同一个 shell/session、网络命名空间和受保护环境
-快照中串行完成；部署返回 `service_ready` 不能表示该 shell 已经可以退出。若使用了提权
-shell，benchmark orchestrator 必须保留该提权 shell 的 session handle，并让它一直存活到
-正式 `vllm bench serve`、raw result 校验、清理和 `benchmark_result.json` 写入全部完成后再
-释放。不得在短命 shell 中启动服务后以 detached/`nohup` 方式把服务交给后续 shell，也不得
-通过新的提权 shell 重新连接服务。
+路径 A 的整个服务生命周期（启动→验收→压测→清理）必须放进一次 bash 调用完成。部署、
+服务验收、正式 `vllm bench serve`、raw result 校验、清理和 `benchmark_result.json` 写入
+在该 bash 进程、同一网络命名空间和受保护环境快照中串行执行；部署返回 `service_ready`
+不能表示该 bash 调用可以退出，它必须持续到清理与最终报告 artifact 全部落盘之后。不得在
+短命 shell 中启动服务后以 detached/`nohup` 方式把服务交给后续 shell，也不得通过新的
+bash 调用或提权 shell 重新连接服务。
 
 ### 路径 B：Provider 已提供部署好的服务
 
@@ -78,32 +81,36 @@ Ascend 驱动设备节点、wildcard TCP bind 和 Provider 服务所在的网络
 attempt。平台弹窗负责授权；授权成功后，环境预检、服务验收（路径 B）、CLI 检查和正式
 `vllm bench serve` 必须复用同一个提权上下文。路径 A 还必须复用部署报告所记录的上下文，
 并直接使用部署 skill 返回的 `selected_devices` 和 `selected_port`，不重新探测 NPU 或端口。
-路径 A 的提权上下文是 attempt 级生命周期 owner：部署 skill 启动的 shell/session 在
-`service_ready` 后继续阻塞或等待 benchmark 完成信号，直到清理结果和最终报告落盘；benchmark
-阶段不得切换到另一个 `exec`、Bash、网络命名空间或环境快照。shell/session 提前退出、句柄
-丢失或服务因此不可达时，当前 attempt 必须报告环境/服务生命周期错误，性能字段保持 `null`，
-并使用新的 attempt 重试。
+路径 A 的提权上下文是 attempt 级生命周期 owner：持有整个服务生命周期（启动→验收→压测→
+清理）的那一次 bash 调用在 `service_ready` 后继续执行 benchmark 阶段，直到清理结果和最终
+报告落盘后才退出；benchmark 阶段不得切换到另一个 `exec`、bash 调用、网络命名空间或环境
+快照。该 bash 调用提前退出、句柄丢失或服务因此不可达时，当前 attempt 必须报告环境/服务
+生命周期错误，性能字段保持 `null`，并使用新的 attempt 重试。
 
 平台拒绝、提权失败或状态无法确认时写出结构化 preflight failure；不得把沙箱内的 `EPERM`、
 驱动错误、零设备数或端口不可达当作真实 Provider 资源结论。路径 A 的部署失败沿用部署
-报告；路径 B 写出 benchmark 的失败报告且不执行正式测量。
+报告的事实与结论，并在同一 bash 调用内立即写出 benchmark 自己的失败报告后退出，
+不等待设备或端口状态变化；路径 B 写出 benchmark 的失败报告且不执行正式测量。
 
 ## CLI 与运行时语义
 
 以下语义直接作为 workload 合同的一部分冻结，执行时不通过读取 vLLM 源码临时确认：
 
 - CLI 能力检查只执行一次 `vllm bench serve --help=all`；禁止先运行裸 `--help`、按子命令
-  重复加载 help，或因为输出截断而启动第二次 serve 进程。所有需要的参数必须从这份完整 help
-  artifact 解析。
+  重复加载 help，或因为输出截断而启动第二次 serve 进程。完整输出落盘为
+  `<attempt-dir>/bench-serve-help-all.txt`，所有需要的参数必须从这份完整 help artifact
+  解析。
 - `--base-url` 只包含 scheme、host 和 port（例如 `http://127.0.0.1:8117`），`--endpoint`
   只包含以 `/` 开头的 HTTP 路径（例如 `/v1/completions` 或 `/v1/chat/completions`），不能把
   完整 URL 或重复的 `/v1` 拼进 endpoint。endpoint 必须与 `--backend` 的请求函数匹配：
   completions backend 的最终 URL 以 `completions` 结尾，chat backend 以 `chat/completions`
   结尾（其他 backend 同理遵循其 help 中的后缀）。执行前用最终拼接出的 URL 做一次服务验收；
   不要为了确认 endpoint 语义去读取 vLLM 源码。
-- `generation.temperature` 必须由 Provider 显式冻结并在支持时传入 `--temperature`。不传该参数
-  时 CLI 值为未设置，最终默认由服务端/模型 API 决定，不能假定为 `0` 或贪心采样；报告必须记录
-  是否传入。需要可重复的贪心请求时显式传 `--temperature 0`。
+- `generation.temperature` 由 Provider 显式冻结时按冻结值传入 `--temperature`；Provider
+  未显式冻结时使用[负载契约](references/workload.md)的默认值 `--temperature 0`（贪心、
+  可重复），并在 workload artifact 中标记为 defaulted。仅当 Provider 显式冻结为 `null`
+  时命令不传 `--temperature`，由服务端/模型 API 决定，不能把 CLI 未设置值假定为 `0`；
+  报告必须记录实际传入值及其来源。
 - 对 `selection=hf` 或预置长 Prefill，使用 `--dataset-name hf` 和语义数据集 ID 的
   `--hf-name`。`likaixin/InstructCoder` 必须通过 `--hf-name likaixin/InstructCoder` 触发
   `InstructCoderDataset` adapter，即使 `--dataset-path` 指向本地 cache；不要用本地目录名
@@ -117,15 +124,16 @@ attempt。平台弹窗负责授权；授权成功后，环境预检、服务验�
 
 1. 按[Ascend 环境探测](references/ascend-probes.md)的路径规则确定执行上下文。路径 A
    调用部署 skill，由其完成沙箱、Ascend 环境、NPU 和端口预检；本 skill 只验收部署报告，
-   不重复执行这些探测。路径 A 必须先建立 attempt 级长生命周期 shell/session，再在该
-   session 内调用部署 skill；该 session 只有在 benchmark、清理和报告交付结束后才能回收。
+   不重复执行这些探测。路径 A 必须先把整个服务生命周期（启动→验收→压测→清理）放进
+   一次 bash 调用，再在该调用内执行部署 skill；该调用只有在 benchmark、清理和报告交付
+   结束后才能退出。
    路径 B 完成一次沙箱检测和 benchmark 环境预检，确认当前上下文可运行官方
    `vllm bench serve`，并将 artifact 写入 attempt 目录。路径 A 不再执行 `npu-smi info`；
    路径 B 的 `npu-smi info`（若需要用于本地沙箱隔离判定）只执行一次并复用其 artifact。
 2. 按 Provider 服务路径处理服务：路径 A 仅在部署报告为 `service_ready` 时接管服务；
-   在同一长生命周期 session 内验证进程、健康接口、`/v1/models`、served model identity
-   和最小请求。路径 B 在已确定的同一执行上下文中验证交付的 URL、端口可达性、健康接口、
-   模型身份和最小请求。服务阶段失败时写出失败报告，不进入测量。
+   在持有服务生命周期的同一次 bash 调用内验证进程、健康接口、`/v1/models`、served model
+   identity 和最小请求。路径 B 在已确定的同一执行上下文中验证交付的 URL、端口可达性、健康
+   接口、模型身份和最小请求。服务阶段失败时写出失败报告，不进入测量。
 3. 按[负载契约](references/workload.md)解析 `selection`、`scenario`、数据集和
    `benchmark_mode`，验证数据集 split、版本/hash 和有限样本可读性，并准备官方 CLI 参数。
    HF 数据集不得为了计算 108,391 等全量样本数而遍历到 EOF；只读取 split 元数据并抽样一个
@@ -139,9 +147,9 @@ attempt。平台弹窗负责授权；授权成功后，环境预检、服务验�
 5. 只选择本次命令产生的唯一、可解析 raw JSON，按[报告结构](references/report-schema.md)
    核验模型身份、请求计数、完成/失败计数、指标和 goodput，再写出唯一
    `benchmark_result.json`。
-6. 路径 A 在 raw result 校验、清理 artifact 和 `benchmark_result.json` 写入完成前不得释放
-   lifecycle owner shell。若 shell 在正式请求期间消失，先记录服务日志、进程和连接错误，
-   再按请求不完整处理；不得把连接失败的零值指标当作有效性能结果。
+6. 路径 A 在 raw result 校验、清理 artifact 和 `benchmark_result.json` 写入完成前不得退出
+   持有服务生命周期的这一次 bash 调用。若该调用在正式请求期间退出，先记录服务日志、进程
+   和连接错误，再按请求不完整处理；不得把连接失败的零值指标当作有效性能结果。
 7. 正式请求阶段发生 OOM 时，记录当前 attempt 的日志或进程 artifact，并报告
    `status=error`、`failure.type=runtime_oom`、`oom.phase=benchmark`。服务启动或最小
    请求阶段的 OOM 由部署报告负责。
@@ -155,8 +163,8 @@ attempt。平台弹窗负责授权；授权成功后，环境预检、服务验�
 - 性能指标只能直接映射官方 raw JSON；不得从日志、SSE、请求时间戳或部分样本重算。
 - `service_identity_valid=true` 只表示服务验收通过，不表示 benchmark 成功。
 - 每次 attempt 使用独立目录，既有 attempt artifact 不得覆盖。
-- 路径 A 的服务进程不得脱离 attempt lifecycle owner shell；清理和最终报告完成后才能回收
-  提权 shell。服务 shell 提前回收造成的连接失败必须作为 attempt 错误记录，不能重用其
+- 路径 A 的服务进程不得脱离持有整个服务生命周期的这一次 bash 调用；清理和最终报告完成后
+  该调用才能退出。bash 调用提前退出造成的连接失败必须作为 attempt 错误记录，不能重用其
   部分结果。
 - `preflight` 必须引用本次使用的沙箱检测、benchmark 环境预检和（路径 A）部署报告；
   路径 A 的 `selected_devices`、`selected_port` 只能来自部署报告。

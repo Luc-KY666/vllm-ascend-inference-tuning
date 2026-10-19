@@ -18,7 +18,7 @@ vllm bench serve --help=all
 --dataset-name --dataset-path
 --num-prompts --max-concurrency --num-warmups
 --request-rate --burstiness
---temperature（Provider 显式提供时）
+--temperature（Provider 显式提供或按默认值 0 传入时）
 --percentile-metrics --metric-percentiles
 --save-result --result-dir 或等价结果输出参数
 ```
@@ -53,8 +53,10 @@ vllm bench serve \
 
 `--base-url` 必须是 scheme、host 和 port；`--endpoint` 必须是以 `/` 开头且与 backend 匹配的
 HTTP 路径（completions 以 `completions` 结尾，chat 以 `chat/completions` 结尾），并由服务
-验收阶段用最终拼接 URL 校验。只有 Provider 显式冻结了 temperature 才追加该参数；
-省略时不要把 vLLM CLI 的未设置值推断为 `0`，并在 workload artifact 中记录省略。
+验收阶段用最终拼接 URL 校验。temperature 按[负载契约](workload.md)解析：Provider 显式
+冻结时按冻结值追加 `--temperature`；未显式冻结时按默认值追加 `--temperature 0`；仅显式
+冻结为 `null` 时不追加该参数，且不要把 vLLM CLI 的未设置值推断为 `0`。实际传入值与
+来源记录在 workload artifact 中。
 
 追加 workload 参数必须严格来自 [workload.md](workload.md) 的同一分支。命令不得同时
 传递两个 skip-chat-template 别名，不得把请求吞吐当作 goodput。

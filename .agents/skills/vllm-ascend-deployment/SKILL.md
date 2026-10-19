@@ -44,7 +44,7 @@ skill 必须默认通过执行平台的 `sandbox_permissions=require_escalated` 
   `@file` 引用或目录。先在同一 shell 中生成 JSON 字符串，再以 `--protected-env "$JSON"` 传入；
   JSON 解析失败时记录为输入错误，不先尝试路径再重试内联值。
 - vLLM CLI 能力只检查一次 `vllm serve --help=all`。禁止先调用裸 `--help` 再因输出不完整重试；
-  后续阶段复用这份 help artifact。
+  后续阶段复用这份 help artifact，完整输出落盘为 `<attempt-dir>/vllm-serve-help-all.txt`。
 - 版本使用 `importlib.metadata.version("vllm")` 和
   `importlib.metadata.version("vllm-ascend")` 获取，缺失 metadata 时记录 `null/unknown` 并继续
   诊断；禁止访问 `vllm.__version__` 或 `vllm_ascend.__version__`。源码位置使用已导入模块的
@@ -81,9 +81,16 @@ skill 必须默认通过执行平台的 `sandbox_permissions=require_escalated` 
    shell 命令输出，由 agent 根据实际输出判定设备与端口状态。只有
    明确判定为空闲的设备和可用的端口才能用于启动。空闲设备不足 `TP * DP`、端口不可用
    或状态无法确认时写出 `resource_preflight_failed`，不自动换卡、换端口或扩大 TP。
+   该判定是一次性的时间点结论：只要 Provider 可见卡中空闲数量不足 `TP * DP`（含判定为
+   busy 或 unknown 的卡），必须**立即写出失败报告并退出当前部署 attempt**，不得等待、
+   轮询或以任何形式挂起以等待其他工作负载释放设备；设备释放后的重试只能通过新的
+   唯一输出目录发起新的 attempt。
 8. 资源检查完成后，在同一上下文中直接使用第 7 步返回的 `selected_devices` 和
    `selected_port` 执行 `vllm serve`。若第 1 步触发了提权，服务必须留在该提权上下文；
-   记录命令、日志、PID 和清理边界。
+   记录命令、日志、PID 和清理边界。vLLM API server 启动时会在运行时 TMPDIR 下创建
+   ZMQ IPC socket，完整路径（`TMPDIR + "/" + UUID`）不得超过 107 字符；attempt 目录
+   路径过长时优先在 attempt 目录之外创建短路径临时目录运行，并在部署报告中记录
+   （约束细节见 [ascend-probes.md](references/ascend-probes.md)）。
 9. 依次验收进程、健康接口、`/v1/models`、served model identity 和最小请求。健康、
    身份或最小请求失败时按阶段写结构化 failure；启动或最小请求阶段 OOM 使用
    `service_startup_oom` 分类。
@@ -105,6 +112,9 @@ skill 必须默认通过执行平台的 `sandbox_permissions=require_escalated` 
 
 - 推荐未知、没有可行 TP、环境预检失败、静态 OOM reject、资源预检失败和服务验收失败
   都必须保留现场并停止当前 attempt。
+- 资源预检发现空闲卡不足 `TP * DP` 时必须立即写出 `resource_preflight_failed` 并退出：
+  不等待设备释放、不轮询、不挂起，“等待释放”不构成本技能的任何阶段，也不得把等待
+  时间计入部署耗时；设备释放后的重试属于使用新输出目录的新 attempt。
 - 不因 OOM、启动失败或健康检查失败自动扩大 TP/DP、替换设备、降低上下文或改用未提供
   的端口。
 - `service_ready` 只表示部署层健康、模型身份和最小请求通过，不表示压测成功或参数最优。

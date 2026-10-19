@@ -129,6 +129,7 @@ def _vllm_serve_check(
     timeout: float,
     which: Callable[[str], str | None] = shutil.which,
     runner: Callable[..., Any] = subprocess.run,
+    help_artifact: str | None = None,
 ) -> dict[str, Any]:
     executable = which(command)
     if not executable:
@@ -136,6 +137,7 @@ def _vllm_serve_check(
             "status": "failed",
             "failure_type": "vllm_executable_missing",
             "command": [command, "serve", "--help=all"],
+            "help_artifact": None,
         }
     argv = [executable, "serve", "--help=all"]
     try:
@@ -152,15 +154,26 @@ def _vllm_serve_check(
             "failure_type": "vllm_serve_probe_failed",
             "command": argv,
             "error": str(exc),
+            "help_artifact": None,
         }
-    return {
+    record = {
         "status": "pass" if result.returncode == 0 else "failed",
         "failure_type": None if result.returncode == 0 else "vllm_serve_unavailable",
         "command": argv,
         "returncode": result.returncode,
         "stdout": (result.stdout or "")[-4000:],
         "stderr": (result.stderr or "")[-4000:],
+        "help_artifact": None,
     }
+    if help_artifact is not None:
+        try:
+            target = Path(help_artifact)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(result.stdout or "", encoding="utf-8")
+            record["help_artifact"] = str(target)
+        except OSError as exc:
+            record["help_artifact_error"] = str(exc)
+    return record
 
 
 def _atb_check(
@@ -190,6 +203,7 @@ def run_runtime_checks(
     loader: Callable[[str], Any] = ctypes.CDLL,
     which: Callable[[str], str | None] = shutil.which,
     runner: Callable[..., Any] = subprocess.run,
+    serve_help_artifact: str | None = None,
 ) -> dict[str, Any]:
     expected = json.loads(expected_json)
     protected_keys = tuple(expected) or PROTECTED_ENV
@@ -215,6 +229,7 @@ def run_runtime_checks(
             timeout=timeout,
             which=which,
             runner=runner,
+            help_artifact=serve_help_artifact,
         )
         status = (
             "pass"
@@ -239,6 +254,7 @@ def check_runtime(
     loader: Callable[[str], Any] = ctypes.CDLL,
     which: Callable[[str], str | None] = shutil.which,
     runner: Callable[..., Any] = subprocess.run,
+    serve_help_artifact: str | None = None,
 ) -> int:
     report = run_runtime_checks(
         expected_json,
@@ -248,6 +264,7 @@ def check_runtime(
         loader=loader,
         which=which,
         runner=runner,
+        serve_help_artifact=serve_help_artifact,
     )
     print(json.dumps(report, ensure_ascii=False), flush=True)
     return 0 if report.get("status") == "pass" else 2
@@ -280,6 +297,10 @@ def main(argv: list[str] | None = None) -> int:
         help="内联 JSON object 字符串（不是 JSON 文件路径）的受保护环境变量快照",
     )
     parser.add_argument("--output")
+    parser.add_argument(
+        "--serve-help-output",
+        help="将 vllm serve --help=all 的完整 stdout 落盘为文件 artifact，供后续阶段复用",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -290,7 +311,11 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(str(exc))
     if args.protected_env == "{}":
         protected = {key: os.environ.get(key) for key in PROTECTED_ENV}
-    report = run_runtime_checks(json.dumps(protected), timeout=args.timeout)
+    report = run_runtime_checks(
+        json.dumps(protected),
+        timeout=args.timeout,
+        serve_help_artifact=args.serve_help_output,
+    )
     if args.output:
         _write_json(args.output, report)
     print(json.dumps(report, ensure_ascii=False, indent=2))
