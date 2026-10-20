@@ -1,18 +1,26 @@
 # 静态 OOM 与最小 TP 预检
 
-静态预检是容量诊断，不启动服务、不绑定端口、不读取运行中的设备进程，也不替代服务
-验收。部署流程从 `deployment.json` 和官方 `config.json` 派生
-`static-oom-input.json`，再调用唯一脚本入口：
+静态预检是容量诊断，每个 deployment attempt 只执行一次。它不启动服务、不绑定端口、
+不重新读取模型目录或中间 JSON。agent 将规范化输入和硬件事实在内存中组成 payload，脚本
+只从 stdin 或显式 `--input` 文件读取，并把结果打印到 stdout：
 
 ```text
-python <skill-root>/scripts/static_oom_precheck.py \
-  --input <attempt-dir>/static-oom-input.json \
-  --output <attempt-dir>/static-oom-report.json
+python <skill-root>/scripts/static_oom_precheck.py < normalized-oom-input.json
 ```
+
+或：
+
+```text
+python <skill-root>/scripts/static_oom_precheck.py --input /path/to/input.json
+```
+
+脚本不接受 `--output` 或 `--input-artifact`，不创建静态 OOM 输入/报告文件。agent 直接把
+结果写入 `stages.static_oom.input`、`result`、`recommended_tp` 和 `oom`，必要诊断尾部写入
+`diagnostics_tail`。
 
 ## 推荐模式
 
-当 `deployment.json.input_status=missing_parameters` 且 TP 缺失时，派生输入必须显式写入：
+当 TP 缺失时，payload 必须显式包含：
 
 ```json
 {
@@ -26,29 +34,18 @@ python <skill-root>/scripts/static_oom_precheck.py \
 }
 ```
 
-脚本不会从 vLLM CLI 的 `None` 或帮助文本推断这些参数。推荐结果为
-`recommendation.recommended_tp` 时，调用方必须使用 `input_contract.py --resolve-tp` 原子
-更新同一个 `deployment.json`，记录 `resolution.mode=auto_recommended`，然后重新执行
-契约校验和后续部署。
+脚本按 `allowed_tp` 升序选择第一个明确通过的值。TP 写回只更新
+`stages.tp_resolution`，记录 `static_oom_reused=true`、`recheck_performed=false`，不得因
+写回再次调用静态预检。
 
-## 输入
+## 输入和计算
 
-`static-oom-input.json` 至少包含：
+输入至少包含 `model.config`、可靠的 `weight_bytes` 或 `weight_gib`、
+`hardware.card_memory_bytes`、`hardware.device_count`、`runtime.tp`、`runtime.dp`、
+`max_num_seqs`、显存比例、最低上下文、block size、`allowed_tp` 和 `official_min_tp`。
+缺少 KV Cache 字段、dtype、权重需求或硬件容量时返回 `unknown`。
 
-- `model.config`、可靠的 `weight_bytes` 或 `weight_gib`；
-- `hardware.card_memory_bytes` 和 `hardware.device_count`；
-- `runtime.tp`、`runtime.dp`、`max_num_seqs`、显存比例、最低上下文、block size、
-  `allowed_tp` 和 `official_min_tp`。
-
-`config` 由部署流程从 `deployment.json.model.config_path` 读取；脚本本身不扫描模型目录
-或权重文件。`hidden_size`、`num_attention_heads` 和 `head_dim` 按配置中的独立字段参与
-计算，不再要求 `hidden_size == num_attention_heads * head_dim`，以兼容分组/多查询注意力
-等投影维度不同的模型。缺少 KV Cache 所需字段、dtype、权重需求或硬件容量时仍返回
-`unknown`。
-
-## 计算口径
-
-Dense decoder 的权重和最低 KV Cache 计算保持以下规则：
+Dense decoder 的口径为：
 
 ```text
 memory_budget = floor(card_memory_bytes * gpu_memory_utilization)
@@ -59,16 +56,5 @@ context_tokens = ceil(min_required_context_len / block_size) * block_size
 minimum_kv_bytes = max_num_seqs * context_tokens * kv_bytes_per_token
 ```
 
-`weight_per_card >= memory_budget` 或 `weight_per_card + minimum_kv_bytes > memory_budget`
-时，候选 TP 为 `reject`。`tp * dp > device_count` 或 TP 不能整除 attention heads 时，
-候选也不可用。DP 不倍乘单卡权重或 KV Cache。
-
-## 结果
-
-- `pass`：当前 TP 明确满足设备和最低容量约束；
-- `reject`：当前 TP 明确超出设备或显存约束，部署不得启动；
-- `unknown`：输入事实不足以证明通过或拒绝。
-
-`runtime.tp=null` 时，顶层状态保持 `unknown`，脚本按 `allowed_tp` 升序评估，第一个
-`pass` 作为最小推荐。候选全部拒绝时 `recommendation.status=unavailable`；存在未知候选
-且没有通过值时保持 `unknown`。推荐报告不能单独表示服务已启动或健康。
+`pass` 表示当前 TP 明确满足最低容量，`reject` 表示明确超出设备或显存约束，`unknown`
+表示事实不足。推荐结果不能单独表示服务已启动或健康。

@@ -180,8 +180,9 @@ goodput 约束只记录 Provider 实际提供的字段。合同不完整、数�
 `invalid` 或 `blocked`。`temperature=null` 表示命令不传 `--temperature`，由服务端决定默认值；
 不得把它解释成 `0`。
 
-Provider 未显式冻结以下可选字段时使用默认值，并在 workload artifact 的
-`resolution.defaulted_fields` 中记录：
+Provider 未显式冻结以下可选字段时使用默认值，并在
+`benchmark_report.json.workload.resolution.defaulted_fields` 中记录；实际 temperature 和来源
+写入 `benchmark_report.json.workload.generation`：
 
 - `temperature=0`：显式传入 `--temperature 0`，贪心且可重复；
 - `num_warmups=10`：warmup 请求不计入正式请求统计；

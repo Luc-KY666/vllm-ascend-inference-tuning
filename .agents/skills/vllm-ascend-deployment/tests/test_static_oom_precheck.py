@@ -280,10 +280,9 @@ class StaticOomPrecheckTests(unittest.TestCase):
         self.assertEqual(result["status"], "reject")
         self.assertNotEqual(result["status"], "pass")
 
-    def test_main_accepts_bom_and_writes_output(self) -> None:
+    def test_main_accepts_bom_and_writes_stdout_only(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             input_path = Path(temp_dir) / "static-oom-input.json"
-            output_path = Path(temp_dir) / "static-oom-report.json"
             input_path.write_text(
                 "\ufeff" + json.dumps(self.payload),
                 encoding="utf-8",
@@ -291,28 +290,24 @@ class StaticOomPrecheckTests(unittest.TestCase):
             stdout = io.StringIO()
             with redirect_stdout(stdout):
                 exit_code = precheck_module.main(
-                    ["--input", str(input_path), "--output", str(output_path)]
+                    ["--input", str(input_path)]
                 )
             self.assertEqual(exit_code, 0)
-            output = json.loads(output_path.read_text(encoding="utf-8"))
+            output = json.loads(stdout.getvalue())
             self.assertEqual(output["status"], "pass")
-            self.assertIn('"schema_version"', stdout.getvalue())
+            self.assertFalse((Path(temp_dir) / "static-oom-report.json").exists())
 
     def test_main_returns_reject_exit_code_and_preserves_report(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             input_path = Path(temp_dir) / "input.json"
-            output_path = Path(temp_dir) / "output.json"
             input_path.write_text(json.dumps({**self.payload, "model": {"weight_bytes": 900, "config": self.payload["model"]["config"]}}), encoding="utf-8")
             stdout = io.StringIO()
             with redirect_stdout(stdout):
                 exit_code = precheck_module.main(
-                    ["--input", str(input_path), "--output", str(output_path)]
+                    ["--input", str(input_path)]
                 )
             self.assertEqual(exit_code, 3)
-            self.assertEqual(
-                json.loads(output_path.read_text(encoding="utf-8"))["status"],
-                "reject",
-            )
+            self.assertEqual(json.loads(stdout.getvalue())["status"], "reject")
 
     def test_main_reports_invalid_json_with_exit_code_two(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -332,6 +327,18 @@ class StaticOomPrecheckTests(unittest.TestCase):
             exit_code = precheck_module.main(["--input", "-"])
         self.assertEqual(exit_code, 0)
         self.assertEqual(json.loads(stdout.getvalue())["status"], "pass")
+
+    def test_stdin_does_not_create_input_or_report_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_artifact = Path(temp_dir) / "static-oom-input.json"
+            output_path = Path(temp_dir) / "static-oom-report.json"
+            stdout = io.StringIO()
+            with patch("sys.stdin", io.StringIO(json.dumps(self.payload))), redirect_stdout(stdout):
+                exit_code = precheck_module.main(["--input", "-"])
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(json.loads(stdout.getvalue())["status"], "pass")
+            self.assertFalse(input_artifact.exists())
+            self.assertFalse(output_path.exists())
 
 
 if __name__ == "__main__":

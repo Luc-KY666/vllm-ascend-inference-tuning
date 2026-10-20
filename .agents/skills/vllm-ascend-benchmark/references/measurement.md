@@ -48,7 +48,8 @@ vllm bench serve \
   --percentile-metrics ttft,tpot,e2el \
   --metric-percentiles 50,95 \
   --save-result \
-  --result-dir <attempt-dir>
+  --result-dir <attempt-dir> \
+  --result-filename raw_benchmark_result.json
 ```
 
 `--base-url` 必须是 scheme、host 和 port；`--endpoint` 必须是以 `/` 开头且与 backend 匹配的
@@ -70,21 +71,36 @@ Provider 只提供部分 goodput 约束时，仅传递实际提供的字段，�
 未提供任何 goodput 约束时不传 `--goodput`，最终报告为
 `goodput.status=not_requested`。
 
+命令不得传递 `--save-detailed`。除官方 `raw_benchmark_result.json` 外，不在 attempt 目录写入
+benchmark JSON；stdout/stderr 只用于有限长度的运行时诊断，不写入报告正文或独立 transcript。
+
 ## 执行上下文、执行和 raw result
 
-1. 只在 [ascend-probes.md](ascend-probes.md) 确定的执行上下文中运行命令。路径 A 复用
-   部署报告的提权上下文和已验收服务；路径 B 复用本次 benchmark 的提权上下文。不得在
-   测量阶段重新探测沙箱、NPU 或 Provider 端口。
-2. 在执行前建立独立 attempt 目录，并记录目录中已有的 JSON 文件集合。
-3. 记录完整命令、vLLM/vLLM-Ascend 版本、CLI 能力摘要、服务身份和开始时间。
+1. 只在 [vllm-ascend-probes](../../vllm-ascend-probes/SKILL.md) 生成的
+   `environment_probe.json` 确定的执行上下文中运行命令。路径 A 复用部署报告
+   `artifacts.probe.environment_probe` 指向的文件、其中的 `status`、`sandbox.status`、
+   `execution_context` 和已验收服务；路径 B 复用本次 benchmark 的唯一 probe。不得在测量
+   阶段重新探测沙箱、NPU、端口工具或 Provider 端口。
+   当 probe 为 `status=pass`、`sandbox.status=not_detected`、`execution_context=current`
+   时，部署、服务验收、benchmark 和报告写入可以跨多个普通 Bash 调用执行，但每次服务
+   交接都必须重新验收 deployment v2 service-ready checkpoint。若 probe 要求提权或
+   `execution_context=elevated`，则这些阶段必须继续使用同一个提权 Bash；不得启动第二个
+   Bash、再次提权或切换网络命名空间。状态为 `failed`、`sandbox.status=unknown` 或上下文为
+   `unknown` 时不执行正式测量，并写出受控 preflight failure；不得把状态不确定当作无隔离。
+   路径 A 只接受 `vllm-ascend-deployment-report-v2`，设备和端口从
+   `stages.resources` 读取，服务 URL、PID 和模型身份从 `stages.service` 读取；不得读取
+   `environment`、`inputs.*` 或旧版别名。
+2. 在执行前建立独立 attempt 目录和 `scripts/` 子目录，并记录目录中已有的 JSON 文件集合。
+3. 记录完整命令、vLLM/vLLM-Ascend 版本、CLI 能力摘要、服务身份和开始时间到内存中的报告对象。
 4. 正式执行一次 `vllm bench serve`。warmup 不计入正式请求统计；诊断复测必须使用新的
    attempt 目录。
-5. 只从本次命令开始后新建或更新的 JSON 中选择 raw result；`benchmark_result.json`、
-   临时文件和日志不是 raw result 候选。
-6. raw result 候选必须唯一、非空、可解析，并且模型身份、请求数、完成/失败数、数据集
+5. 只接受本次命令生成的 `raw_benchmark_result.json`；禁止通过扫描目录选择其他 JSON，也不
+   接受旧的 `benchmark_result.json`、临时文件或日志作为 raw result。
+6. raw result 必须非空、可解析，并且模型身份、请求数、完成/失败数、数据集
    摘要、并发和到达率与冻结输入一致。零个候选报告 `raw_result_not_found`，多个候选
    报告 `raw_result_ambiguous`。
-7. 保存 raw JSON 路径和 SHA256；不覆盖既有 attempt 的 artifact。
+7. 保存 raw JSON 路径和 SHA256；不覆盖既有 attempt 的 artifact，并通过报告 I/O 原子写入
+   `benchmark_report.json`。
 
 ## 指标门禁
 
@@ -136,4 +152,4 @@ OOM 证据至少包含当前 attempt artifact 路径、匹配摘要和时间信�
 - 路径 B 的服务不由当前 skill 停止或修改。
 - 清理失败写入 `cleanup.status=failed` 和错误 artifact，但不把已完成的性能结果改写为
   `success` 以外的状态，除非清理本身使报告无法交付。
-- 无论命令成功或失败，都必须尝试写出可解析的 `benchmark_result.json`。
+- 无论命令成功或失败，都必须尝试写出可解析的 `benchmark_report.json`。

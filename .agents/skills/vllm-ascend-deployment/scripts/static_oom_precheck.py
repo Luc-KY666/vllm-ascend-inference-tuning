@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import os
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -114,6 +113,8 @@ def _quantization_reason(
         return "存在量化配置 runtime.quantization，但没有明确权重大小"
 
     config_quantization = config.get("quantization_config")
+    if config.get("has_quantization_config"):
+        config_quantization = True
     if config_quantization not in (None, {}, False, ""):
         return "存在量化配置 model.config.quantization_config，但没有明确权重大小"
     return None
@@ -492,21 +493,9 @@ def _read_json(path: str) -> Any:
     return json.loads(Path(path).read_text(encoding="utf-8-sig"))
 
 
-def _write_json(path: str, value: Any) -> None:
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
-    temporary.write_text(
-        json.dumps(value, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    os.replace(temporary, target)
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", required=True, help="JSON 输入文件，使用 - 表示 stdin")
-    parser.add_argument("--output", help="可选的 JSON 输出文件")
+    parser.add_argument("--input", default="-", help="JSON 输入文件，省略或使用 - 表示 stdin")
     args = parser.parse_args(argv)
     try:
         payload = _read_json(args.input)
@@ -515,12 +504,8 @@ def main(argv: list[str] | None = None) -> int:
         result = precheck(payload)
     except (OSError, ValueError, TypeError, OverflowError, AttributeError) as exc:
         result = _unknown_result(f"输入无效: {type(exc).__name__}: {exc}")
-        if args.output:
-            _write_json(args.output, result)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 2
-    if args.output:
-        _write_json(args.output, result)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if result["status"] in {"pass", "unknown"} else 3
 

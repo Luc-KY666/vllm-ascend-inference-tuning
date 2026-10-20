@@ -1,106 +1,57 @@
 # 部署报告结构
 
-`deployment_report.json` 是一次独立 deployment attempt 的最终事实记录。它必须保留
-规范输入、推荐前后配置、各阶段 artifact、服务验收和清理状态。
+`deployment_report.json` 是 deployment skill 唯一负责的结构化输出。完整的
+`environment_probe.json`、`sandbox-detection.json`、两个 help 文件和服务日志仍由探针或
+服务流程外置保存。规范模板唯一维护在
+[`deployment-report-template.json`](deployment-report-template.json)；本文件只说明约束，
+不再复制第二份完整 JSON。
 
-```json
-{
-  "schema_version": "vllm-ascend-deployment-report-v1",
-  "status": "<recommendation_only|input_invalid|environment_preflight_failed|resource_preflight_failed|static_oom_rejected|startup_failed|healthcheck_failed|service_identity_invalid|service_ready|cleanup_failed>",
-  "model": {
-    "model_path": "<deployment.json.model.model_path>",
-    "served_model_name": "<deployment.json.model.served_model_name>",
-    "config_path": "<deployment.json.model.config_path>",
-    "config_digest": "<sha256>"
-  },
-  "deployment": {
-    "before_resolution": {"tp": null},
-    "resolved": {
-      "tp": 2,
-      "dp": 1,
-      "max_num_seqs": 32,
-      "max_num_batched_tokens": 4096,
-      "gpu_memory_utilization": 0.9,
-      "max_model_len": null,
-      "dtype": "auto",
-      "quantization": null
-    },
-    "resolution": {
-      "mode": "input|auto_recommended|none",
-      "recommended_tp": 2,
-      "source": "<static-oom-report.json>"
-    }
-  },
-  "resources": {
-    "visible_devices": ["0", "1"],
-    "selected_devices": ["0", "1"],
-    "port_candidates": [8117],
-    "selected_port": 8117
-  },
-  "inputs": {
-    "deployment": "<attempt-dir>/deployment.json",
-    "sandbox_detection": "<attempt-dir>/sandbox-detection.json",
-    "ascend_preflight": "<attempt-dir>/ascend-preflight.json",
-    "npu_resource_probe": "<attempt-dir>/npu-resource-probe.json",
-    "port_resource_probe": "<attempt-dir>/port-resource-probe.json",
-    "static_oom_input": "<attempt-dir>/static-oom-input.json",
-    "static_oom_report": "<attempt-dir>/static-oom-report.json"
-  },
-  "preflight": {
-    "environment": "<pass|failed|not_run>",
-    "static_oom": "<pass|reject|unknown|not_run>",
-    "resources": "<pass|failed|not_run>",
-    "recommended_tp": 2
-  },
-  "service": {
-    "url": "http://127.0.0.1:8117",
-    "pid": 1234,
-    "handoff": "<provider|not_handed_off>"
-  },
-  "checks": {
-    "process": "<passed|failed|not_run>",
-    "health": "<passed|failed|not_run>",
-    "models_api": "<passed|failed|not_run>",
-    "served_model_identity": "<passed|failed|not_run>",
-    "minimal_request": "<passed|failed|not_run>",
-    "cleanup": "<passed|failed|not_applicable|not_run>"
-  },
-  "service_identity_valid": false,
-  "artifacts": {
-    "command": "<path|null>",
-    "server_log": "<path|null>",
-    "pid": "<path|null>",
-    "raw_checks": "<path|null>"
-  },
-  "failure": null,
-  "oom": {
-    "detected": false,
-    "phase": "none",
-    "type": null,
-    "evidence": []
-  },
-  "error": null
-}
-```
+## 顶层契约
 
-## 约束
+报告必须使用 `vllm-ascend-deployment-report-v2`，并包含 `status`、`attempt`、`input`、
+`environment`、`stages`、`artifacts`、`failure` 和 `timings`。`stages` 固定包含：
 
-- `inputs` 中的路径必须指向当前 attempt 的实际 artifact；未执行阶段为 `null`，不得
-  伪造生成成功。
-- `npu_resource_probe` 和 `port_resource_probe` 是本次 attempt 唯一的服务资源事实；它们由
-  [resource-probes.md](resource-probes.md) 在启动前记录一次可用卡 `npu-smi info`、端口探测、
-  原始证据和 agent 判定结果。`sandbox_detection` 中的 `npu-smi` 只用于隔离判定，不得当作
-  可用卡快照。服务启动直接使用资源 probe 返回的设备和端口，不记录或执行二次资源 probe。
-- `input_invalid`、`environment_preflight_failed`、`resource_preflight_failed`、
-  `static_oom_rejected` 和 `recommendation_only` 均不得启动服务。
-- 静态 OOM `reject` 必须记录 `failure.stage=static_preflight`、
-  `failure.type=static_oom_rejected`、`oom.phase=static_preflight` 和
-  `oom.type=static_oom_rejected`。
-- 启动或最小请求阶段 OOM 必须记录 `failure.stage=service_startup`、
-  `failure.type=service_startup_oom`、`oom.phase=service_startup` 和
-  `oom.type=service_startup_oom`。
-- `service_identity_valid=true` 只能在进程、健康接口、`/v1/models`、served model
-  identity 和最小请求全部通过后记录。
-- 失败报告必须包含 `failure.stage`、`failure.type`、`failure.message` 和相关 artifact；
-  OOM evidence 至少包含当前日志或预检报告、匹配摘要和时间信息。
-- 重试使用新的唯一输出目录，不覆盖已有 attempt。
+- `input_validation`
+- `static_oom`
+- `tp_resolution`
+- `resources`
+- `service`
+- `cleanup`
+
+各阶段将结构化结果直接写入报告。agent 在内存中持有完整对象，只在初始化、输入/静态 OOM/
+TP 决策完成、资源/服务验收完成、清理或受控失败四个关键节点写回。
+
+## 路径归属
+
+- `environment` 只保存环境事实、摘要、已验证的端口工具和有界诊断尾部。不得出现
+  `probe_path`、`sandbox_path` 或 probe/help 路径。
+- `artifacts.probe` 是 probe 文件路径的唯一来源：`environment_probe`、
+  `sandbox_detection`、`serve_help`、`bench_help`。
+- `artifacts.raw_logs` 只保存完整服务日志或命令 transcript 的路径及必要元数据；日志尾部
+  写入对应阶段，普通命令尾部最多 4 KiB，服务日志尾部最多 8 KiB。
+- 同一个非空路径在报告中只能出现一次。`failure.artifacts` 只能写逻辑引用，例如
+  `artifacts.raw_logs.server_log`，不得重复绝对路径。
+- `model_config.parsed` 只保存静态 OOM 和运行所需的架构摘要，不复制完整 `config.json`。
+
+## 阶段规则
+
+`stages.input_validation` 保存校验结果、规范化输入和错误/警告；`stages.static_oom` 保存
+预检输入、结果、推荐 TP 和 OOM 证据；TP 写回只更新 `stages.tp_resolution`，必须记录
+`static_oom_reused=true`、`recheck_performed=false`。资源、服务验收和清理结果分别写入
+`resources`、`service` 和 `cleanup`。
+
+以下部署侧中间 JSON 不得创建或在报告中引用：
+`deployment.json`、`static-oom-input.json`、`static-oom-report.json`、
+`npu-resource-probe.json`、`port-resource-probe.json`、`acceptance-checks.json`、
+`cleanup.json`。
+
+## 生命周期和失败
+
+每次 checkpoint 使用同目录临时文件、刷新并 `os.replace` 原子替换最终报告。受控失败必须
+填写 `failure` 并完成最终 checkpoint；强制终止只保留最近一次 `status=running` 的检查点，
+由 `attempt.updated_at` 表明报告尚未完成。未执行阶段使用 `not_run`、`skipped` 或 `null`，
+不得伪造成功。
+
+benchmark 只接受 v2，设备和端口从 `stages.resources` 读取，服务 URL、PID 和模型身份从
+`stages.service` 读取，probe 路径从 `artifacts.probe` 读取。不提供 v1 兼容适配器；历史
+v1 报告仅作为既有 artifact 保留。

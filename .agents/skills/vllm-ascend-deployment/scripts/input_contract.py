@@ -1,18 +1,20 @@
-"""Validate a Provider deployment request and write deployment.json."""
+"""Validate a Provider deployment request and emit normalized JSON on stdout."""
 
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import math
 import os
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = "vllm-ascend-deployment-v1"
+SCHEMA_VERSION = "vllm-ascend-deployment-input-v2"
 DEFAULTS = {
     "dp": 1,
     "max_num_seqs": 32,
@@ -29,6 +31,19 @@ RESOURCE_FIELDS = {
     "max_tp_dp",
     "card_memory_bytes",
     "device_count",
+}
+CONFIG_SUMMARY_FIELDS = {
+    "hidden_size",
+    "num_hidden_layers",
+    "num_attention_heads",
+    "num_key_value_heads",
+    "head_dim",
+    "vocab_size",
+    "intermediate_size",
+    "num_experts",
+    "torch_dtype",
+    "tie_word_embeddings",
+    "has_quantization_config",
 }
 
 
@@ -70,17 +85,30 @@ def _ports(value: Any) -> list[int] | None:
     return result if len(set(result)) == len(result) else None
 
 
-def _config(model_path: Path, explicit: Any) -> tuple[Path | None, dict[str, Any] | None, str | None]:
+def _config_with_digest(
+    model_path: Path, explicit: Any
+) -> tuple[Path | None, dict[str, Any] | None, str | None, str | None]:
     config_path = Path(explicit) if isinstance(explicit, str) and explicit else model_path / "config.json"
     if not config_path.is_file() or not os.access(config_path, os.R_OK):
-        return config_path, None, f"config.json 不可读: {config_path}"
+        return config_path, None, f"config.json 不可读: {config_path}", None
     try:
-        value = json.loads(config_path.read_text(encoding="utf-8-sig"))
+        # Read once: the same bytes provide both the JSON value and its report digest.
+        raw = config_path.read_bytes()
+        digest = hashlib.sha256(raw).hexdigest()
+        value = json.loads(raw.decode("utf-8-sig"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        return config_path, None, f"无法读取 config.json: {exc}"
+        return config_path, None, f"无法读取 config.json: {exc}", locals().get("digest")
     if not isinstance(value, dict):
-        return config_path, None, "config.json 必须是 JSON object"
-    return config_path, value, None
+        return config_path, None, "config.json 必须是 JSON object", digest
+    return config_path, value, None, digest
+
+
+def _config(
+    model_path: Path, explicit: Any
+) -> tuple[Path | None, dict[str, Any] | None, str | None]:
+    """Backward-compatible config loader for callers that do not need a digest."""
+    path, value, error, _digest = _config_with_digest(model_path, explicit)
+    return path, value, error
 
 
 def _head_count(config: Mapping[str, Any]) -> int | None:
@@ -89,8 +117,28 @@ def _head_count(config: Mapping[str, Any]) -> int | None:
     return value if _positive_int(value, "num_attention_heads") else None
 
 
+def _config_summary(config: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep only architecture facts needed by static OOM and service startup."""
+    source: dict[str, Any] = dict(config)
+    text_config = config.get("text_config")
+    if isinstance(text_config, Mapping):
+        source.update(text_config)
+    summary = {
+        key: source[key]
+        for key in CONFIG_SUMMARY_FIELDS
+        if key in source and isinstance(source[key], (str, int, float, bool))
+    }
+    if config.get("quantization_config") not in (None, {}, False, ""):
+        summary["has_quantization_config"] = True
+    return summary
+
+
 def validate_and_build(
-    payload: Mapping[str, Any], *, check_unique: bool = True
+    payload: Mapping[str, Any],
+    *,
+    check_unique: bool = True,
+    config_override: Mapping[str, Any] | None = None,
+    config_digest_override: str | None = None,
 ) -> dict[str, Any]:
     model = _mapping(payload.get("model"))
     runtime_in = _mapping(payload.get("runtime"))
@@ -117,7 +165,19 @@ def validate_and_build(
     if not isinstance(served_name, str) or not served_name.strip():
         errors.append("model.served_model_name 必须是非空字符串")
 
-    config_path, config, config_error = _config(model_path, model.get("config_path"))
+    if config_override is None:
+        config_path, config, config_error, config_digest = _config_with_digest(
+            model_path, model.get("config_path")
+        )
+    else:
+        config_path = (
+            Path(model["config_path"])
+            if isinstance(model.get("config_path"), str) and model.get("config_path")
+            else model_path / "config.json"
+        )
+        config = dict(config_override)
+        config_error = None
+        config_digest = config_digest_override
     if config_error:
         errors.append(config_error)
     heads = _head_count(config or {})
@@ -211,19 +271,8 @@ def validate_and_build(
     attempt_dir = Path(attempt_dir_value) if isinstance(attempt_dir_value, str) else Path(".")
     if not isinstance(attempt_dir_value, str) or not attempt_dir.is_absolute():
         errors.append("outputs.attempt_dir 必须是绝对路径")
-    elif not attempt_dir.exists():
-        try:
-            attempt_dir.mkdir(parents=True)
-        except OSError as exc:
-            errors.append(f"无法创建输出目录: {exc}")
-    deployment_path = attempt_dir / "deployment.json"
-    if check_unique and deployment_path.exists():
-        errors.append(f"输出目录已经包含 deployment.json: {deployment_path}")
 
     input_status = "invalid" if errors else ("missing_parameters" if required_missing else "pass")
-    digest = None
-    if config_path and config_path.is_file():
-        digest = hashlib.sha256(config_path.read_bytes()).hexdigest()
     deployment = {
         "schema_version": SCHEMA_VERSION,
         "input_status": input_status,
@@ -231,7 +280,8 @@ def validate_and_build(
             "model_path": str(model_path_value) if isinstance(model_path_value, str) else None,
             "served_model_name": served_name if isinstance(served_name, str) else None,
             "config_path": str(config_path) if config_path else None,
-            "config_digest": digest,
+            "config_digest": config_digest,
+            "config": _config_summary(config or {}),
         },
         "runtime": runtime,
         "resources": {
@@ -248,7 +298,6 @@ def validate_and_build(
         "outputs": {
             **outputs_in,
             "attempt_dir": str(attempt_dir),
-            "deployment": str(deployment_path),
         },
         "resolution": {
             "mode": "input",
@@ -261,57 +310,45 @@ def validate_and_build(
     return deployment
 
 
-def resolve_recommended_tp(path: str | Path, tp: int, source: str) -> dict[str, Any]:
+def resolve_recommended_tp(
+    normalized: Mapping[str, Any], tp: int, source: str
+) -> dict[str, Any]:
+    """Return a TP-updated normalized object without reading or writing a file."""
+
     if not _positive_int(tp, "recommended_tp"):
         raise ContractError("recommended_tp 必须是正整数")
-    target = Path(path)
-    deployment = json.loads(target.read_text(encoding="utf-8-sig"))
-    if not isinstance(deployment, dict):
-        raise ContractError("deployment.json 必须是 JSON object")
+    if not isinstance(normalized, Mapping):
+        raise ContractError("规范化输入必须是 JSON object")
+    deployment = copy.deepcopy(dict(normalized))
     original_status = deployment.get("input_status", "missing_parameters")
+    model_obj = _mapping(deployment.get("model"))
     runtime = deployment.setdefault("runtime", {})
     runtime["tp"] = tp
     check = validate_and_build(
         {
-            "model": deployment.get("model", {}),
+            "model": model_obj,
             "runtime": runtime,
             "resources": deployment.get("resources", {}),
             "outputs": deployment.get("outputs", {}),
         },
         check_unique=False,
+        config_override=model_obj.get("config", {}),
+        config_digest_override=model_obj.get("config_digest"),
     )
-    deployment["input_status"] = check["input_status"]
-    deployment["resources"] = check["resources"]
-    deployment["diagnostics"] = check["diagnostics"]
+    deployment = check
     deployment["resolution"] = {
         "mode": "auto_recommended",
         "recommended_tp": tp,
         "source": source,
         "original_status": original_status,
     }
-    diagnostics = deployment.setdefault("diagnostics", {})
-    diagnostics.setdefault("errors", [])
-    diagnostics.setdefault("warnings", [])
-    deployment_path = target.with_name(f".{target.name}.{os.getpid()}.tmp")
-    deployment_path.write_text(json.dumps(deployment, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    os.replace(deployment_path, target)
     return deployment
-
-
-def _write(path: str | Path, value: Mapping[str, Any]) -> None:
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
-    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    os.replace(temporary, target)
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", help="仅供内部读取已有 deployment.json")
-    parser.add_argument("--output")
     parser.add_argument("--resolve-tp", type=int)
-    parser.add_argument("--resolution-source", default="static-oom-report.json")
+    parser.add_argument("--resolution-source", default="static_oom")
     parser.add_argument("--model-path")
     parser.add_argument("--served-model-name")
     parser.add_argument("--config-path")
@@ -339,12 +376,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.resolve_tp is not None:
-            if not args.input:
-                raise ContractError("--resolve-tp 必须配合内部 deployment.json 的 --input")
-            result = resolve_recommended_tp(args.input, args.resolve_tp, args.resolution_source)
+            payload = json.load(sys.stdin)
+            if not isinstance(payload, Mapping):
+                raise ContractError("stdin 必须是规范化 JSON object")
+            result = resolve_recommended_tp(payload, args.resolve_tp, args.resolution_source)
         else:
-            if args.input:
-                raise ContractError("--input 仅用于配合 --resolve-tp 读取已有 deployment.json")
             required = {
                 "model_path": args.model_path,
                 "served_model_name": args.served_model_name,
@@ -390,14 +426,8 @@ def main(argv: list[str] | None = None) -> int:
                 "outputs": {"attempt_dir": args.attempt_dir},
             }
             result = validate_and_build(payload)
-            output = args.output or str(Path(result["outputs"]["attempt_dir"]) / "deployment.json")
-            if Path(output).exists():
-                raise ContractError(f"输出文件已存在，拒绝覆盖: {output}")
-            _write(output, result)
     except (OSError, json.JSONDecodeError, ContractError, TypeError, ValueError) as exc:
         result = {"schema_version": SCHEMA_VERSION, "input_status": "invalid", "diagnostics": {"errors": [str(exc)]}}
-        if args.output and not Path(args.output).exists():
-            _write(args.output, result)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 2
     print(json.dumps(result, ensure_ascii=False, indent=2))

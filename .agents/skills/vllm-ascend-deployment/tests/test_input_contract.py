@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import io
 from pathlib import Path
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from unittest.mock import patch
 
 
 SCRIPT_DIR = Path(__file__).resolve().parents[1] / "scripts"
@@ -43,6 +46,7 @@ class InputContractTests(unittest.TestCase):
         self.assertEqual(result["runtime"]["max_num_seqs"], 32)
         self.assertEqual(result["runtime"]["max_num_batched_tokens"], 4096)
         self.assertEqual(result["runtime"]["allowed_tp"], [1, 2])
+        self.assertEqual(result["model"]["config"], {"hidden_size": 16, "num_attention_heads": 8})
 
     def test_invalid_model_path_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -62,6 +66,21 @@ class InputContractTests(unittest.TestCase):
         self.assertEqual(result["input_status"], "invalid")
         self.assertTrue(any("config.json" in error for error in result["diagnostics"]["errors"]))
 
+    def test_config_bytes_are_read_once_for_parse_and_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            payload = self.payload(root)
+            original_read_bytes = Path.read_bytes
+            with patch.object(
+                Path,
+                "read_bytes",
+                autospec=True,
+                side_effect=lambda path: original_read_bytes(path),
+            ) as read_bytes:
+                result = input_contract.validate_and_build(payload)
+        self.assertEqual(result["input_status"], "missing_parameters")
+        self.assertEqual(read_bytes.call_count, 1)
+
     def test_invalid_batch_relationship_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             result = input_contract.validate_and_build(
@@ -69,28 +88,45 @@ class InputContractTests(unittest.TestCase):
             )
         self.assertEqual(result["input_status"], "invalid")
 
-    def test_recommended_tp_is_written_back_atomically(self) -> None:
+    def test_recommended_tp_returns_updated_object_without_writing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             deployment = input_contract.validate_and_build(self.payload(root))
-            path = root / "deployment.json"
-            path.write_text(json.dumps(deployment), encoding="utf-8")
-            result = input_contract.resolve_recommended_tp(path, 2, "static-oom-report.json")
-            stored = json.loads(path.read_text(encoding="utf-8"))
+            result = input_contract.resolve_recommended_tp(deployment, 2, "static_oom")
         self.assertEqual(result["runtime"]["tp"], 2)
-        self.assertEqual(stored["runtime"]["tp"], 2)
-        self.assertEqual(stored["resolution"]["mode"], "auto_recommended")
-        self.assertEqual(stored["resolution"]["original_status"], "missing_parameters")
+        self.assertEqual(result["resolution"]["mode"], "auto_recommended")
+        self.assertEqual(result["resolution"]["source"], "static_oom")
+        self.assertFalse((root / "deployment.json").exists())
+
+    def test_tp_resolution_reuses_config_summary_without_a_second_config_read(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original_read_bytes = Path.read_bytes
+            with patch.object(
+                Path,
+                "read_bytes",
+                autospec=True,
+                side_effect=lambda path: original_read_bytes(path),
+            ) as read_bytes:
+                normalized = input_contract.validate_and_build(self.payload(root))
+                input_contract.resolve_recommended_tp(normalized, 2, "static_oom")
+        self.assertEqual(read_bytes.call_count, 1)
 
     def test_recommended_tp_is_revalidated(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             deployment = input_contract.validate_and_build(self.payload(root))
-            path = root / "deployment.json"
-            path.write_text(json.dumps(deployment), encoding="utf-8")
-            result = input_contract.resolve_recommended_tp(path, 3, "static-oom-report.json")
+            result = input_contract.resolve_recommended_tp(deployment, 3, "static_oom")
         self.assertEqual(result["input_status"], "invalid")
         self.assertTrue(result["diagnostics"]["errors"])
+
+    def test_tp_resolution_reuses_existing_static_report_without_rechecking_oom(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            deployment = input_contract.validate_and_build(self.payload(root))
+            result = input_contract.resolve_recommended_tp(deployment, 2, "static_oom")
+        self.assertEqual(result["input_status"], "pass")
+        self.assertEqual(result["resolution"]["source"], "static_oom")
 
     def test_cli_builds_contract_from_provider_fields(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -101,27 +137,35 @@ class InputContractTests(unittest.TestCase):
                 json.dumps({"num_attention_heads": 8}), encoding="utf-8"
             )
             attempt = root / "attempt"
-            code = input_contract.main(
-                [
-                    "--model-path",
-                    str(model),
-                    "--served-model-name",
-                    "field-model",
-                    "--visible-devices",
-                    "0",
-                    "1",
-                    "--port-candidates",
-                    "18117",
-                    "--attempt-dir",
-                    str(attempt),
-                ]
-            )
-            stored = json.loads((attempt / "deployment.json").read_text(encoding="utf-8"))
+            output = io.StringIO()
+            with redirect_stdout(output):
+                code = input_contract.main(
+                    [
+                        "--model-path", str(model), "--served-model-name", "field-model",
+                        "--visible-devices", "0", "1", "--port-candidates", "18117",
+                        "--attempt-dir", str(attempt),
+                    ]
+                )
+            stored = json.loads(output.getvalue())
         self.assertEqual(code, 0)
         self.assertEqual(stored["input_status"], "missing_parameters")
         self.assertNotIn("python", stored["resources"])
         self.assertNotIn("vllm", stored["resources"])
         self.assertNotIn("atb_probe", stored["resources"])
+        self.assertFalse(attempt.exists())
+
+    def test_cli_resolves_tp_from_stdin_without_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            normalized = input_contract.validate_and_build(self.payload(Path(directory)))
+            stdout = io.StringIO()
+            with patch("sys.stdin", io.StringIO(json.dumps(normalized))), redirect_stdout(stdout):
+                code = input_contract.main(
+                    ["--resolve-tp", "2", "--resolution-source", "static_oom"]
+                )
+            result = json.loads(stdout.getvalue())
+            self.assertEqual(code, 0)
+            self.assertEqual(result["runtime"]["tp"], 2)
+            self.assertFalse((Path(directory) / "deployment.json").exists())
 
     def test_unsupported_tool_fields_are_not_written(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -144,9 +188,7 @@ class InputContractTests(unittest.TestCase):
             root = Path(directory)
             deployment = input_contract.validate_and_build(self.payload(root))
             deployment["resources"]["vllm"] = "vllm"
-            path = root / "deployment.json"
-            path.write_text(json.dumps(deployment), encoding="utf-8")
-            result = input_contract.resolve_recommended_tp(path, 2, "static-oom-report.json")
+            result = input_contract.resolve_recommended_tp(deployment, 2, "static_oom")
         self.assertEqual(result["runtime"]["tp"], 2)
         self.assertNotIn("vllm", result["resources"])
 
