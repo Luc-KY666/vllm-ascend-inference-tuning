@@ -142,10 +142,9 @@ skill 必须默认通过执行平台的 `sandbox_permissions=require_escalated` 
 5. 每个容器都必须使用计划中的稳定名称、`boom.skill.*` 所有权标签、固定驱动挂载、
    NPU 设备、模型挂载和服务 argv。启动后先通过 SSH 执行 `docker inspect`，核对实际
    挂载和设备与计划一致；不一致时停止当前 attempt 的后续启动并进入清理。
-6. 按 [multi-node/readiness-and-validation.md](references/multi-node/readiness-and-validation.md)
-   执行角色级 readiness、模型身份和最小业务请求。只因容器存在、端口监听或单个服务
-   健康就绪都不能报告成功；DP/TP 必须验证全部 rank，PD 必须验证完整 Proxy 到 P/D
-   的请求链路和 KV 传输。
+6. 按 [multi-node/common.md](references/multi-node/common.md) 第 4 节执行服务验收：
+   从公共入口发送最小业务请求，验证请求完成和返回的模型名称；并行策略等内部配置
+   不纳入验收。
 7. 发生 graph capture 失败时，按对应模式对全部相关 rank 一致增加 `--enforce-eager`，
    最多执行一次完整重启；参数错误、HCCL/NPU 错误、模型路径错误和 connector 错误
    不得通过无限 readiness 轮询掩盖。
@@ -164,10 +163,9 @@ skill 必须默认通过执行平台的 `sandbox_permissions=require_escalated` 
 - [资源预检](references/resource-probes.md)：空闲 NPU 和 Provider 端口检查。
 - [静态 OOM 规则](references/static-oom.md)：容量判定和最小 TP 推荐。
 - [部署报告结构](references/report-schema.md)：一次部署 attempt 的输出合同。
-- [多机公共规则](references/multi-node/common.md)：SSH、Docker、挂载、标签、计划和清理。
+- [多机公共规则](references/multi-node/common.md)：SSH、Docker、挂载、部署、验收和清理。
 - [multi-node deployment](references/multi-node/multi-node-deployment.md)：普通多机 vLLM 启动与验证。
 - [multi-node PD-disaggregated deployment](references/multi-node/multi-node-PD-disaggregated-deployment.md)：Prefill/Decode、KV Transfer 和 Proxy。
-- [多机 readiness](references/multi-node/readiness-and-validation.md)：角色级健康和业务验证。
 - [输入契约脚本](scripts/input_contract.py)：生成和更新 `deployment.json`。
 - [环境预检脚本](scripts/ascend_preflight.py)：检查当前 Bash 中的 Ascend 环境。
 

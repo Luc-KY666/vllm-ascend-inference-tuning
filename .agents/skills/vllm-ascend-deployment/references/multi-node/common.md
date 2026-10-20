@@ -1,157 +1,91 @@
 # 多机 Docker 部署共用规则
 
 本文件是 `vllm-ascend-deployment` 的多机部署共用参考资料，适用于 **multi-node deployment**
-和 **multi-node PD-disaggregated deployment**。它复用主 Skill 的 attempt 目录、Provider
-生命周期和 `deployment_report.json`；本目录不再作为独立 Skill 入口，也不调用单机部署的
-本地 NPU/端口探测结论。
+和 **multi-node PD-disaggregated deployment**。它复用主 Skill 的 Provider
+生命周期和 `deployment_report.json` 报告结构，定义公共输入、部署与验收流程、SSH/Docker 安全边界和结果记录；
+本目录不再作为独立 Skill 入口，也不调用单机部署的本地 NPU/端口探测结论。具体服务命令必须
+读取对应的部署说明。
 
-本文件适用于 **multi-node deployment** 和 **multi-node PD-disaggregated deployment**。它只定义公共输入、计划文件、SSH/Docker 安全边界和结果记录；具体命令必须读取对应的部署说明。
+## 执行流程
 
-## 公共计划格式
+多机部署必须按以下顺序执行，前一阶段失败时停止，不得跳到远端变更或服务启动：
 
-在任何远端变更前写入当前 attempt 目录：
+1. **输入检查**：识别部署意图（**multi-node deployment** 或 **multi-node
+   PD-disaggregated deployment**），并通过 SSH 验证每个输入节点存在、节点间可连通、
+   模型路径存在，探测各节点 NPU 卡。
+2. **宿主机运行时预检**：在每个节点检查 Docker 镜像可用、容器执行权限和七项固定 Ascend
+   挂载源路径；任一节点失败时报告 `runtime_incomplete`，不启动任何容器。
+3. **部署**：按部署类型读取对应模式文档，获得具体部署配置和部署策略，按其启动顺序通过
+   SSH 在目标宿主机执行 `docker pull`/`docker run`，不得在 Agent/Pi 容器内操作 Docker daemon。
+4. **服务验收与报告记录**：先从公共入口发送最小业务请求，验证请求完成和模型名称；验收完成后
+   将实际部署配置和验收结果写入部署目录 `/data/boom/deployment`。
 
-```text
-<attempt-dir>/deployment-plan.json
-```
+## 1. 输入检查
 
-计划是当前 attempt 的派生 JSON artifact，不是 Provider 输入，也不写入 Boom Lifecycle 数据库。示例：
+SSH 连接规则：端口使用用户明确指定的值，否则默认 `22`；使用已配置的 SSH key 或 SSH agent 做非交互式登录，不把密码写在命令行，不使用 `sshpass`。宿主机 SSH 地址与 `network_ip` 可以不同：前者用于控制面登录，后者用于 vLLM/HCCL 数据面通信。
 
-```json
-{
-  "deployment_id": "<skill-generated-instance-id>",
-  "deployment_type": "multi-node deployment",
-  "runtime": {
-    "image": "registry.example/vllm-ascend:tag",
-    "network_mode": "host",
-    "model_mount": "/data/models/qwen:/models/qwen:ro"
-  },
-  "nodes": [
-    {
-      "id": "node-0",
-      "host": "10.0.0.1",
-      "user": "root",
-      "ssh_port": 22,
-      "execution_transport": "ssh",
-      "network_ip": "10.0.0.1",
-      "network_interface": "eth0",
-      "npu_devices": [0, 1, 2, 3],
-      "role": "master"
-    }
-  ],
-  "services": [
-    {
-      "id": "vllm-master",
-      "node_id": "node-0",
-      "role": "master",
-      "container_name": "boom-skill-deploy-qwen-001-vllm-master",
-      "argv": [],
-      "environment": {},
-      "mounts": [],
-      "devices": [],
-      "ports": [],
-      "depends_on": [],
-      "readiness": {}
-    }
-  ],
-  "validation": {
-    "endpoint": "http://10.0.0.1:8000",
-    "model": "qwen",
-    "request": {"prompt": "hello", "max_tokens": 8}
-  }
-}
-```
+1. **意图识别**：仅说“多机部署”判定为 **multi-node deployment**；出现“Prefill/Decode”“PD 分离”“Mooncake”或“KV Transfer”判定为 **multi-node PD-disaggregated deployment**。
+2. **节点存在**：`host` 不能是 `localhost`/`127.0.0.1`/`::1`；对每个节点执行非交互式 SSH 登录，返回的 hostname 与输入一致：
 
-计划中必须有最终展开的命令、节点、容器、挂载、设备、端口和 readiness。密码、私钥、token 和其他凭据不能写入计划。
+   ```bash
+   ssh -o BatchMode=yes -o ConnectTimeout=5 -p <ssh_port> <user>@<host> "hostname"
+   ```
 
-## 当前 MVP 的固定 Ascend 主机运行时挂载
+3. **节点间可连通**：从每个节点 ping 其余节点的数据面 IP：
 
-普通 DP/TP 和 PD 容器都使用同一组固定的 Ascend 主机运行时挂载。当前 MVP 不从镜像读取挂载清单，也不创建临时容器读取清单；Skill 必须直接使用下面七项，并在每个节点启动前检查源路径：
+   ```bash
+   ssh -o BatchMode=yes -o ConnectTimeout=5 -p <ssh_port> <user>@<host> \
+     "ping -c 1 -W 2 <other_node_network_ip>"
+   ```
+4. **模型路径存在**：模型目录必须位于每个加载模型节点的本地磁盘（普通多机为全部节点，PD 分离为全部 Prefill/Decode 节点，Proxy/Mooncake 不需要）。对每个加载模型的节点通过 SSH 检查：
 
-| 宿主机源 | 容器目标 | 类型 | 检查 |
-|---|---|---|---|
-| `/usr/local/dcmi` | `/usr/local/dcmi` | 目录 | `test -d` 且可读 |
-| `/usr/local/bin/npu-smi` | `/usr/local/bin/npu-smi` | 文件 | `test -x` |
-| `/usr/local/Ascend/driver/lib64` | `/usr/local/Ascend/driver/lib64` | 目录 | `test -d` 且可读 |
-| `/usr/local/Ascend/driver/version.info` | `/usr/local/Ascend/driver/version.info` | 文件 | `test -f` 且可读 |
-| `/etc/ascend_install.info` | `/etc/ascend_install.info` | 文件 | `test -f` 且可读 |
-| `/usr/local/Ascend/driver/tools/hccn_tool` | `/usr/local/Ascend/driver/tools/hccn_tool` | 文件 | `test -x` |
-| `/etc/hccn.conf` | `/etc/hccn.conf` | 文件 | `test -f` 且可读 |
+   ```bash
+   ssh -o BatchMode=yes -o ConnectTimeout=5 -p <ssh_port> <user>@<host> \
+     "test -d <model_host_path> && test -f <model_host_path>/config.json && echo MODEL_OK"
+   ```
 
-每项都以只读方式挂载。`/home`、`/data`、模型目录和日志目录不是驱动挂载，不能用它们替代上表中的路径；模型和日志作为服务自己的挂载单独加入计划。
+5. **NPU 卡探测**：探测每个节点的 NPU 卡数量；用户指定了节点上的可用卡时只能使用指定卡，未指定时默认全部可用：
 
-每个使用 NPU 的服务还必须加入当前节点选中的 `/dev/davinci<device_id>`，以及：
+   ```bash
+   ssh -o BatchMode=yes -o ConnectTimeout=5 -p <ssh_port> <user>@<host> "npu-smi info"
+   ```
 
-```text
-/dev/davinci_manager
-/dev/devmm_svm
-/dev/hisi_hdc
-```
+任一项失败时报告节点和原因，不继续后续预检。
 
-启动前对每个节点执行等价检查：固定源路径、模型宿主机目录、选中的 `/dev/davinci<device_id>` 和三个共享设备都必须存在。任一检查失败时报告 `runtime_incomplete`，不得启动 Master 或 Worker。
+## 2. 宿主机运行时预检
 
-启动后对每个新建容器执行 `docker inspect`，确认 `HostConfig.Binds` 包含七项固定挂载，`HostConfig.Devices` 包含计划中的 NPU 和共享设备。实际配置与计划不一致时停止当前 deployment 的容器并报告失败。
-
-## 公共输入检查
-
-执行 `docker pull` 或 `docker run` 前，逐项检查：
-
-- `deployment_id` 由 Skill 根据当前 attempt 生成，用户不需要提供；
-- 节点 ID、服务 ID 和容器名唯一；
-- 每个节点的宿主机 SSH 地址、用户、端口和数据面 IP 已确认，`execution_transport` 为 `ssh`；
-- 所有节点使用已确认的 Docker 镜像；
-- 模型宿主机目录存在，挂载目标是绝对路径；
-- 七项固定 Ascend 挂载源和当前节点 NPU 设备存在；
-- 每个服务需要的 NPU Device 存在且未重复分配；
-- 同一节点没有重复绑定宿主机端口；
-- 通信网卡处于 UP 状态且节点之间可访问；
-- 所有命令参数都有来源：用户输入、只读检测或模式参考文档；
-- 每个容器都有有界的 process、TCP、HTTP 或日志 readiness；
-- 最终业务请求的公共入口、模型名称和请求体已确认。
-
-不能用占用端口的进程猜测服务归属，也不能用默认 rank、默认网卡或默认模型目录替代缺失输入。
-
-## SSH 规则
-
-Agent 的运行环境与部署目标宿主机是两个不同概念。当前 Skill 对所有节点固定使用 SSH，包括运行 Pi/Agent 容器的那台物理机：
-
-- `nodes[].host` 必须是 Pi/Agent 容器能够访问的物理宿主机 SSH 地址，不能填写 `localhost`、`127.0.0.1` 或 `::1`；
-- 宿主机 SSH 地址与 `network_ip` 可以不同；前者用于控制面登录，后者用于 vLLM/HCCL 数据面通信；
-- 所有宿主机路径和设备检查，以及 `docker version`、`docker image inspect`、`docker run`、`docker inspect`、`docker logs`、`docker stop` 和 `docker rm`，都必须通过对应节点的 SSH 连接执行；
-- 不得在 Pi/Agent 容器内启动 `dockerd`，不得把容器内的 Docker daemon 当作部署目标，也不得使用 `/var/run/docker.sock`、`DOCKER_HOST` 或本地 Docker context 绕过本 Skill 的 SSH 边界。
-
-使用已经配置的 SSH key 或 SSH agent，并使用非交互式检查：
+在第 1 节建立 SSH 通道后，对每个节点确认用户指定的 Docker 镜像可用：
 
 ```bash
-ssh -o BatchMode=yes -o ConnectTimeout=5 -p <ssh_port> <user>@<host> "echo SSH_OK"
 ssh -o BatchMode=yes -o ConnectTimeout=5 -p <ssh_port> <user>@<host> \
-  "hostname && docker info --format '{{.Name}}' && test -e /dev/davinci_manager"
+  "docker image inspect <image> --format '{{.RepoTags}}'"
 ```
 
-第二条检查用于确认实际执行位置是计划中的物理宿主机，并确认该 SSH 用户能够访问宿主机 Docker 和 NPU 设备。SSH 不通或 Docker 权限不足时报告节点和原因，要求配置凭据后再继续。不要回退到 Pi/Agent 容器内执行，不要把密码写在命令行，不要把私钥复制到计划目录，不要使用 `sshpass`，也不要把敏感信息写入日志。
+每个节点还检查已有容器执行权限：
 
-## Docker 容器规则
-
-每个容器使用稳定名称和三类标签。标签用于本次 attempt 的精确所有权边界，
-不代表 Boom Lifecycle 的资源租约：
-
-```text
-容器名：boom-skill-<deployment_id>-<service_id>
-boom.skill.owner=standalone-skill
-boom.skill.deployment_id=<deployment_id>
-boom.skill.service_id=<service_id>
+```bash
+ssh -o BatchMode=yes -o ConnectTimeout=5 -p <ssh_port> <user>@<host> \
+  "docker ps -a --format '{{.Names}}\t{{.Status}}'"
 ```
 
-下面的 `docker run` 是在目标宿主机上执行的远端 payload，不是在 Pi/Agent 容器内直接执行的本地命令：
+每个节点检查七项固定 Ascend 运行时挂载源路径，缺哪个报哪个：
+
+```bash
+ssh -o BatchMode=yes -o ConnectTimeout=5 -p <ssh_port> <user>@<host> \
+  'for p in /usr/local/dcmi /usr/local/bin/npu-smi /usr/local/Ascend/driver/lib64 \
+            /usr/local/Ascend/driver/version.info /etc/ascend_install.info \
+            /usr/local/Ascend/driver/tools/hccn_tool /etc/hccn.conf; do \
+     test -e "$p" || echo "MISSING: $p"; \
+   done'
+```
+
+所有 Docker 操作都是在目标宿主机上执行的远端 payload，通过对应节点的 SSH 连接执行；不得在 Pi/Agent 容器内直接执行本地命令或启动 `dockerd`，也不得使用 `/var/run/docker.sock`、`DOCKER_HOST` 或本地 Docker context 绕过 SSH 边界。普通多机部署与PD分类多机部署对于docker容器的拉起可以采用相同的格式，8卡样例挂载命令模版如下：
 
 ```bash
 docker run --detach \
-  --name boom-skill-<deployment_id>-<service_id> \
-  --label boom.skill.owner=standalone-skill \
-  --label boom.skill.deployment_id=<deployment_id> \
-  --label boom.skill.service_id=<service_id> \
+  --name <node-name> \
   --network host \
-  --shm-size <shared_memory> \
+  --shm-size 64g \
   --env KEY=value \
   --volume /usr/local/dcmi:/usr/local/dcmi:ro \
   --volume /usr/local/bin/npu-smi:/usr/local/bin/npu-smi:ro \
@@ -160,51 +94,86 @@ docker run --detach \
   --volume /etc/ascend_install.info:/etc/ascend_install.info:ro \
   --volume /usr/local/Ascend/driver/tools/hccn_tool:/usr/local/Ascend/driver/tools/hccn_tool:ro \
   --volume /etc/hccn.conf:/etc/hccn.conf:ro \
-  --volume /approved/host/model:/models/model:ro \
-  --volume /approved/host/logs:/data/logs \
-  --device /dev/davinci0 \
+  --volume <model_host_path>:/models/model:ro \
+  --volume /data/boom/deployment:/models/deployment \
+  --device=/dev/davinci0 \
+  --device=/dev/davinci1 \
+  --device=/dev/davinci2 \
+  --device=/dev/davinci3 \
+  --device=/dev/davinci4 \
+  --device=/dev/davinci5 \
+  --device=/dev/davinci6 \
+  --device=/dev/davinci7 \
   --device /dev/davinci_manager \
   --device /dev/devmm_svm \
   --device /dev/hisi_hdc \
   <image> <mode-specific-command>
 ```
 
-`--privileged`、host IPC、共享内存大小和昇腾运行时挂载只能由镜像和模式文档明确要求时使用。不要复制其他部署的宿主机控制参数。
+其中：
+- `<node-name>`：容器名称，默认使用当前机器的 IP 地址；
+- `--volume <model_host_path>:/models/model:ro`：`<model_host_path>` 为该节点本地磁盘上的实际模型目录，只读挂载；每个加载模型的服务节点都必须有此挂载（普通多机为全部节点，PD 分离为全部 Prefill/Decode 节点，Proxy/Mooncake 不需要），且所有节点挂载到相同的容器内路径 `/models/model`；
+- `--volume /data/boom/deployment:/models/deployment`：宿主机日志目录，用于在宿主机读取容器的执行记录；服务日志写入容器内 `/models/deployment`；
+- `<image>`：本节已确认可用的用户指定镜像；
+- `<mode-specific-command>`：容器内执行的服务启动命令，按部署类型读取对应模式文档生成的实际部署参数命令。
 
-执行前展示最终命令摘要。执行后保存脱敏的命令、时间戳和结果，不保存完整密码或 token。
+任一检查失败时报告节点、原因和 `runtime_incomplete`，不启动任何容器。
 
-## 启动顺序
+## 3. 部署
 
-启动顺序由模式文档决定：
+在第 2 节预检通过后，按部署类型读取对应模式文档（普通多机见 [multi-node-deployment.md](multi-node-deployment.md)，PD 分离多机见 [multi-node-PD-disaggregated-deployment.md](multi-node-PD-disaggregated-deployment.md)），获得具体部署配置和部署策略，并按其启动顺序通过 SSH 执行部署：
 
-- **multi-node deployment**：先启动 Master，只确认容器和主进程没有立即退出、日志没有明显的参数或环境错误，然后立即并行启动全部 Worker。不要在 Worker 启动前等待 DP RPC、HTTP API 或模型 readiness；这些检查必须在所有节点都启动后统一执行；
-- **multi-node PD-disaggregated deployment**：先启动 KV Transfer/Mooncake，再并行启动 Prefill 和 Decode，最后启动 Proxy。
+- **multi-node deployment**：先启动 Master，只确认容器和主进程没有立即退出、日志没有明显的参数或环境错误，然后立即并行启动全部 Worker。Master 和 Worker 同属一个分布式启动组，Worker 启动前不等待 DP RPC、HTTP API 或模型 readiness，这些检查在全部节点启动后统一执行；
+- **multi-node PD-disaggregated deployment**：先启动 KV Transfer/Mooncake，等待其 readiness 通过后并行启动全部 Prefill 和 Decode，全部 P/D 就绪后再启动 Proxy。
 
-**multi-node deployment** 的 Master 和 Worker 属于同一个分布式启动组，不适用逐层 readiness 门禁。**multi-node PD-disaggregated deployment** 的依赖层仍然要求上一层全部通过 readiness 后才能启动下一层。发生明确失败时停止后续启动，只清理当前 deployment label 匹配的容器。
+发生明确失败时停止后续启动，进入精确清理。清理前在每个节点重新检查容器：
 
-## 本地记录
+```bash
+docker ps -a --format '{{.Names}}\t{{.Status}}'
+```
 
-每个部署至少保存：
+只清理本次部署创建的容器，按容器名精确匹配，按逆依赖顺序执行：
 
 ```text
-<attempt-dir>/
-├── deployment-plan.json
+multi-node deployment：Worker → Master
+multi-node PD-disaggregated deployment：Proxy → Decode/Prefill → KV Transfer/Mooncake
+```
+
+禁止使用 `pkill`、宽范围 `docker rm`、猜测容器 ID 或把端口占用者当作本次部署的服务。
+
+## 4. 服务验收与报告记录
+
+部署完成后先进行服务验收：从公共入口发送最小业务请求，验证请求可以成功完成、返回的模型名称与部署的 `served_model_name` 一致。并行策略等内部配置不纳入验收。例如：
+
+```bash
+curl --fail-with-body http://<public_endpoint>/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "<served_model_name>",
+    "messages": [{"role": "user", "content": "请用一句话说明服务已启动。"}],
+    "max_tokens": 16
+  }'
+```
+
+不要把单纯 HTTP 200 当作业务成功，响应必须包含可解析的选择结果和非空文本。验收失败时按第 3 节的精确清理处理，报告 `failed` 或 `partially_started`。
+
+验收完成后，将实际部署配置和验收结果写入部署目录 `/data/boom/deployment`（容器内 `/models/deployment`）：
+
+```text
+/data/boom/deployment/
 ├── commands.log
 └── deployment_report.json
 ```
 
-`commands.log` 记录脱敏命令和观察时间。`deployment_report.json` 至少记录：
-
-- Skill 生成的 `deployment_id`；
+`commands.log` 记录脱敏命令和观察时间。`deployment_report.json` 是当前部署的派生 JSON artifact，至少记录：
 - `deployment_type`；
 - `execution.deployment_type` 和 `transport=ssh`；
 - 节点和服务映射；
-- 容器名和容器标签摘要；
-- 每个服务的 readiness 结果；
+- 容器名；
+- 每个服务最终展开的命令、挂载、设备、端口；
 - 模型身份；
 - 最小业务请求结果；
 - 失败服务和清理动作；
-- 最终状态 `ready`、`failed` 或 `partially_started`。
+- 最终状态：`ready`（验收全部通过）、`failed`（没有形成可使用的服务，且清理完成或清理失败已明确记录）或 `partially_started`（部分服务已启动，但验收未全部通过）。
 
-主 Skill 的报告结构是唯一结果合同。旧版 `result.json` 和 `.boom-skill/deployments/`
-路径只作为迁移历史，不再创建。
+密码、私钥、token 和其他凭据不能写入报告。主 Skill 的报告结构是唯一结果合同。
