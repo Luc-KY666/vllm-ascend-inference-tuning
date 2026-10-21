@@ -85,7 +85,7 @@ ssh -o BatchMode=yes -o ConnectTimeout=5 -p <ssh_port> <user>@<host> \
 docker run --detach \
   --name <node-name> \
   --network host \
-  --shm-size 64g \
+  --shm-size 250g \
   --env KEY=value \
   --volume /usr/local/dcmi:/usr/local/dcmi:ro \
   --volume /usr/local/bin/npu-smi:/usr/local/bin/npu-smi:ro \
