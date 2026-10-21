@@ -114,6 +114,7 @@ docker run --detach \
 - `<node-name>`：容器名称，默认使用当前机器的 IP 地址；
 - `--volume <model_host_path>:/models/model:ro`：`<model_host_path>` 为该节点本地磁盘上的实际模型目录，只读挂载；每个加载模型的服务节点都必须有此挂载（普通多机为全部节点，PD 分离为全部 Prefill/Decode 节点，Proxy/Mooncake 不需要），且所有节点挂载到相同的容器内路径 `/models/model`；
 - `--volume /data/boom/deployment:/models/deployment`：宿主机日志目录，用于在宿主机读取容器的执行记录；服务日志写入容器内 `/models/deployment`；
+- `--device=/dev/davinci<N>`：挂载第 1 节在该节点探测确认的可用 NPU 卡；用户指定卡号时只挂载指定卡，未指定时挂载全部可用卡，模板中的 `davinci0`-`davinci7` 仅为 8 卡样例；
 - `<image>`：本节已确认可用的用户指定镜像；
 - `<mode-specific-command>`：容器内执行的服务启动命令，按部署类型读取对应模式文档生成的实际部署参数命令。
 
