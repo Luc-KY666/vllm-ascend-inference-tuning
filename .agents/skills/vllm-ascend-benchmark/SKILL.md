@@ -61,7 +61,9 @@ Provider 还必须提供[负载契约](references/workload.md)中的：
 
 - `selection`：`preset`、`hf` 或 `custom`；`preset` 必须同时提供 `scenario`；
 - `benchmark_mode`：`stress` 或 `production`；
-- 数据集路径、名称、split、revision/hash 和适配器专用参数；
+- `preset` 只提供 workload `scenario`，数据集 ID 和适配器由本契约按场景派生；`hf` 才提供
+  Hugging Face 数据集 ID，`custom` 提供本地数据集路径，以及各自的 split、revision/hash
+  和适配器专用参数；preset/hf 不接收外部 `dataset_root`；
 - 请求数、warmup、最大并发、到达率、burstiness、轮次和生成参数；
 - 可选的 goodput SLO（`ttft`、`tpot`、`e2el`，单位毫秒）；
 - 允许写入的 raw benchmark 和报告路径，且最终报告必须位于 attempt 目录内。
@@ -147,10 +149,11 @@ agent 为本次 benchmark 生成的所有临时 Bash/Python 脚本、命令包�
   可重复），并在 workload artifact 中标记为 defaulted。仅当 Provider 显式冻结为 `null`
   时命令不传 `--temperature`，由服务端/模型 API 决定，不能把 CLI 未设置值假定为 `0`；
   报告必须记录实际传入值及其来源。
-- 对 `selection=hf` 或预置长 Prefill，使用 `--dataset-name hf` 和语义数据集 ID 的
-  `--hf-name`。`likaixin/InstructCoder` 必须通过 `--hf-name likaixin/InstructCoder` 触发
-  `InstructCoderDataset` adapter，即使 `--dataset-path` 指向本地 cache；不要用本地目录名
-  替代该 ID，也不要为此读取源码。
+- 对 `selection=hf`，使用调用者提供的 Hugging Face 数据集 ID 作为 `--dataset-path` 和
+  `--hf-name`；对预置长 Prefill/long decode，使用场景合同派生的 Hugging Face 数据集 ID
+  生成相同 CLI 参数。两者都从默认 `~/.cache` 解析，不接受外部 `dataset_root`；preset 调用者
+  只提供 workload 场景，不重复输入数据集 ID。只有 `selection=custom` 的 `--dataset-path`
+  才是本地数据集路径。
 - 版本用 `importlib.metadata.version("vllm")` 与
   `importlib.metadata.version("vllm-ascend")`；源码位置用模块 `__file__` 或
   `importlib.util.find_spec`。可编辑安装可能位于 `/vllm-workspace`，禁止在

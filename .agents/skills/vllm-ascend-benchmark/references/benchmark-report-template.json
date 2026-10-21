@@ -28,7 +28,6 @@
     "selection": null,
     "scenario": null,
     "benchmark_mode": null,
-    "dataset_root": null,
     "dataset": {
       "source": null,
       "mode": null,

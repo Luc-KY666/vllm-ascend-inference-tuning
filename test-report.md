@@ -30,7 +30,6 @@
     可用 NPU 为 0，1，2，3，port 使用 8117，如果已被占用则不进行模型服务拉起。
     在 qwen3-coder-30b-benchmark/ 目录下建立一个唯一标识目录作为本次部署的输出目录。
     使用长 Prefill 负载，共发送 500 条请求，最大并发 64，请求速率 4 req/s。
-    数据集在 '/data/disk/liangkaiyi/hf_cache' 下寻找。
     记录本次模型部署压测每个阶段的总耗时，每个阶段的总耗时为其在设备侧执行耗时加上 agent 侧的思考、文件读写、脚本编写耗时。
     ```
 - Pi + Qwen3.7-Plus high 模型压测耗时：
@@ -42,3 +41,11 @@
     | 正式压测(warmup+500请求) | 225 s |
     | 清理+报告生成 | 32 s |
     | **总计** | 787 s | |
+
+3. Qwen3-Coder-30B-A3B-Instruct 推理部署调优
+- 目前指定了 `TP=2, DP=1`，调节 `max_num_seqs, max_num_batched_tokens`，使用预设的 long prefill 负载
+- 使用方法：
+    - 将 `.agents` 目录拷贝到 `goal-plus-playground/scenarios/boom-new/` 下
+    - 将 `tasks/qwen3-coder-30b-long-prefill-search` 拷贝到 `goal-plus-playground/tasks/boom/` 下，随后修改其中的 `input.md`
+    - 按照 playground 的流程创建 workspace，然后在 workspace 中启动 Pi 并复制 `goal-pi.md`
+- 目前使用 Pi + DeepSeek-V4-Pro 能够完成创行推理部署调优的流程，但执行期间还是会有一些问题，还需要测试调整

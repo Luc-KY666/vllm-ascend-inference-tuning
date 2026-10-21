@@ -106,7 +106,7 @@ oom.type=runtime_oom
 `service_identity_invalid`、`runtime_oom`、`cli_incompatible`、`workload_not_replayable`、
 `raw_result_not_found`、`raw_result_ambiguous`、`raw_result_invalid`、`model_mismatch`、
 `request_count_mismatch`、`benchmark_incomplete`、`metrics_missing`、`goodput_missing`、
-`dataset_contract_invalid`、`dataset_mode_invalid`、`dataset_root_invalid`、
+`dataset_contract_invalid`、`dataset_mode_invalid`、
 `dataset_not_found`、`dataset_prepare_failed`、`dataset_invalid`、`dataset_insufficient`、
 `custom_dataset_invalid`、`hf_dataset_invalid`、`cleanup_failed`、`sandbox_approval_denied`、
 `sandbox_escalation_failed`、`sandbox_isolation_unknown`、`environment_preflight_failed`。

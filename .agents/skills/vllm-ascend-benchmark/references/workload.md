@@ -28,12 +28,22 @@ Provider 冻结一次 attempt 的负载选择、数据集、请求窗口和 benc
 
 ## 数据集输入
 
-`dataset_root` 的使用规则如下：
+本契约不接受外部 `dataset_root`。使用 Hugging Face 数据集的分支统一通过数据集 ID
+解析默认缓存；执行环境从标准 Hugging Face cache（默认位于 `~/.cache`，例如
+`~/.cache/huggingface`）读取已有数据，缺失时由 `datasets` 按数据集 ID 下载。不要要求
+调用者额外提供 cache 根目录，也不要把 preset 或 hf 数据集转换为本地 JSON/JSONL 后使用
+`--dataset-name custom` 加载。
 
-- `preset+random`：必须为 `null`；
-- 其他 preset：必须提供，用于预置数据集和 Hugging Face cache；
-- `hf`：可选，提供时所有 cache 必须位于该目录下；
-- `custom`：必须为 `null`，数据位置由 `dataset.path` 提供。
+- `preset+random`：不需要数据集 ID，`--dataset-path` 不传；
+- 其他 `preset`：由场景合同派生数据集 ID，并生成对应的 `--dataset-path`（不得是本地
+  cache 路径）；调用者只提供 `scenario`，不重复填写该 ID；
+- `hf`：调用者只提供 Hugging Face 数据集 ID，`--dataset-path` 和 `--hf-name` 使用该 ID，
+  不接受本地目录作为数据集输入；
+- `custom`：调用者必须提供本地 JSON/JSONL 路径，禁止远程下载或用 Hugging Face ID 替代。
+
+对于非 random 的 preset，数据集 ID 由场景合同解析并写入 `dataset.name`/`dataset.path`；
+调用者不再填写 cache 根目录。对于 `hf`，调用者只填写一个 Hugging Face 数据集 ID，解析器
+将同一 ID 用于 `dataset.name`、`dataset.path`、`--hf-name` 和 `--dataset-path`。
 
 `selection=hf` 至少包含：
 
@@ -41,7 +51,7 @@ Provider 冻结一次 attempt 的负载选择、数据集、请求窗口和 benc
 {
   "mode": "hf",
   "name": "<hf dataset name>",
-  "path": "<local path or dataset id>",
+  "path": "<same Hugging Face dataset ID>",
   "split": "<split>",
   "subset": "<optional subset>",
   "revision_or_hash": "<resolved revision or hash>",
@@ -62,11 +72,13 @@ Provider 冻结一次 attempt 的负载选择、数据集、请求窗口和 benc
 }
 ```
 
+custom 的 `dataset.path` 是本地文件路径；这是三种选择中唯一允许使用本地数据集路径的分支。
+
 Custom JSONL 每行必须是 JSON object，并包含字符串字段 `prompt`。不执行远程下载；路径
 不可读、抽样行不可解析或抽样记录缺少 prompt 时，workload 状态为 `invalid`。不得通过全量
 计数来判断样本是否充足。
 
-HF 数据集可使用本地路径或 Provider 信任的远程数据集 ID。执行前必须完成 split、格式、
+HF 数据集必须使用 Provider 冻结的 Hugging Face 数据集 ID。执行前必须完成 split、格式、
 有限样本可读性和 revision/hash 校验；禁止为了得到全量 `num_rows` 而遍历数据集到 EOF。
 无法由当前 vLLM HF adapter 稳定解析的数据集应转换为 custom JSONL。
 
@@ -82,7 +94,8 @@ HF 数据集可使用本地路径或 Provider 信任的远程数据集 ID。执�
 
 ## CLI 适配器参数
 
-解析完成后，只能使用与当前分支对应的参数：
+解析完成后，只能使用与当前分支对应的参数。以下是 benchmark 内部生成的 CLI 参数，不是
+调用者需要逐项填写的输入；preset 调用者只提供 `scenario`，其数据集 ID 由场景合同派生：
 
 ```text
 # preset/random
@@ -93,20 +106,20 @@ HF 数据集可使用本地路径或 Provider 信任的远程数据集 ID。执�
 
 # preset/long_prefill or long_decode
 --dataset-name hf
---dataset-path <resolved path>
+--dataset-path <dataset id>
 --hf-name <derived name>
 --hf-split <derived split>
 [--hf-output-len <output length>]
 
 # preset/prefill_decode_balance
 --dataset-name sharegpt
---dataset-path <resolved path>
+--dataset-path <dataset id>
 [--sharegpt-output-len <output length>]
 
 # selection=hf
 --dataset-name hf
---dataset-path <dataset.path>
---hf-name <dataset.name>
+--dataset-path <dataset id>
+--hf-name <dataset id>
 --hf-split <dataset.split>
 [--hf-subset <dataset.subset>]
 [--hf-output-len <dataset.output_len>]
@@ -122,9 +135,10 @@ HF 数据集可使用本地路径或 Provider 信任的远程数据集 ID。执�
 可选参数必须先由当前 `vllm bench serve --help=all` 证实。两个 skip-chat-template 别名
 只能选择一个。Custom 不得传递 HF 或 ShareGPT 专用参数。
 
-对于 `likaixin/InstructCoder`，`--hf-name` 必须保留为 `likaixin/InstructCoder`，因为它负责
-选择 InstructCoder adapter；`--dataset-path` 可以同时指向本地 cache。不要用 cache 目录名
-替代 `--hf-name`，也不要为确认 adapter 分支读取 vLLM 源码。
+对于 `likaixin/InstructCoder`，`--hf-name` 和 `--dataset-path` 都必须保留为
+`likaixin/InstructCoder`，前者负责选择 InstructCoder adapter，后者作为 Hugging Face 数据集
+ID 触发默认 cache 解析。不要用 cache 目录名替代数据集 ID，也不要为确认 adapter 分支读取
+vLLM 源码。
 
 ## Benchmark 模式与冻结字段
 
@@ -140,11 +154,10 @@ Provider 必须冻结以下字段：
   "selection": "preset|hf|custom",
   "scenario": "random|long_prefill|long_decode|prefill_decode_balance|null",
   "benchmark_mode": "stress|production",
-  "dataset_root": "<path or null>",
   "dataset": {
     "mode": "random|hf|sharegpt|custom",
     "name": "<derived or provider-defined>",
-    "path": "<resolved path or id>",
+    "path": "<dataset ID, or local path only for custom>",
     "split": "<split or null>",
     "subset": "<subset or null>",
     "revision_or_hash": "<resolved value>",
