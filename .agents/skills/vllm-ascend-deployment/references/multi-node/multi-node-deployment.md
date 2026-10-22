@@ -29,9 +29,10 @@
 
 ### 1.1 空闲卡确认
 
-`common.md` 公共预检对每个节点执行 `npu-smi info`：节点上有几张 NPU 卡，该节点
-就有几张**可用卡**；可用卡中卡上无进程的才是**空闲卡**。判定以该节点的探测结果
-为准，不重复探测，不等待其他任务释放设备，也不用控制端可见卡替代远端事实。
+`common.md` 公共预检对每个节点执行 `npu-smi info`，可得到每张卡的 HBM 大小和
+是否存在进程。节点上有几张 NPU 卡，该节点就有几张**可用卡**；可用卡上无进程
+的才是**空闲卡**。判定以该节点的探测结果为准，不重复探测，不等待其他任务释放
+设备，也不用控制端可见卡替代远端事实。
 
 每张空闲卡的最大内存从同一份 `npu-smi info` 输出读取：Memory-Usage 列显示
 已用/总量（单位 MB），总量即该卡的最大内存。
@@ -66,8 +67,8 @@ ASCEND_RT_VISIBLE_DEVICES=<本节点已确认的 Device 列表>
 
 ## 2. 并行策略
 
-vLLM 支持多种并行策略（TP、DP、PP、EP 及其组合），本文件只采用其中一种：**节点内
-TP、节点间 DP**——每个节点内选中的全部 NPU 构成一个 TP 组，每个节点是一个 DP rank，
+vLLM 支持多种并行策略（TP、DP、PP、EP 及其组合），当前 skill 暂时仅支持其中一种：
+**节点内 TP、节点间 DP**——每个节点内选中的全部 NPU 构成一个 TP 组，每个节点是一个 DP rank，
 不自动选择 PP、EP、跨节点 TP 或其他并行方式。
 
 参数按此确定：`tensor_parallel_size` = 单节点使用的 NPU 数（各节点一致，除非已有
@@ -78,6 +79,9 @@ Worker 依次为 `1..N-1`，rank 按节点顺序分配，与物理 NPU 编号无
 
 以 3 个节点、每节点 4 张卡为例：`tensor_parallel_size=4`、`data_parallel_size=3`，
 Master 为 rank `0`，两个 Worker 为 rank `1`、`2`。
+
+在确认并行参数后，若任一节点的空闲卡数小于 `tensor_parallel_size` 时，明确判定为**不可部署**：停止执行
+后续部署流程，并向用户报告不可部署的节点和原因。
 
 ## 3. 配置参数和部署
 
@@ -93,10 +97,10 @@ Docker 的公共网络、Ascend 挂载、模型挂载、日志目录和设备参
 | 参数 | 普通多机规则 |
 |---|---|
 | `image` | 用户提供，每个节点使用用户指定镜像 |
-| `model_path` | 每个节点本地存在，按 `common.md` 挂载到相同容器路径 `/models/model` |
+| `model_path` | 容器内统一路径，固定为 `/models/model`；各节点的宿主机模型路径只出现在 `<common-docker-args>` 的挂载参数中 |
 | `served_model_name` | Master 和所有 Worker 一致 |
 | `master_node_ip` | Master 的数据面 IP；所有 Worker 可访问 |
-| `data_parallel_rpc_port` | DP 节点间 RPC 通信端口；Master 上可监听、所有 Worker 可访问 |
+| `data_parallel_rpc_port` | DP 节点间 RPC 通信端口；Master 上可监听，默认 `51216`，端口被占用时切换其他端口，所有 Worker 可访问 |
 | `network_interface` | 每个节点用于 HCCL/Gloo/TP 通信的物理网卡名，填入第 1.2 节的 `*_SOCKET_IFNAME` 环境变量 |
 | `port` | 每个节点的 vLLM API 端口；默认 `8899`，所有节点采用相同端口号，端口被占用时切换其他端口 |
 | `max_model_len` | 模型上下文长度；用户未指定时默认 `4096` |
