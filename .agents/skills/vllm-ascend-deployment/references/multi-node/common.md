@@ -17,7 +17,7 @@
    挂载源路径；任一节点失败时报告 `runtime_incomplete`，不启动任何容器。
 3. **部署**：按部署类型读取对应模式文档，获得具体部署配置和部署策略，按其启动顺序通过
    SSH 在目标宿主机执行 `docker pull`/`docker run`，不得在 Agent/Pi 容器内操作 Docker daemon。
-4. **服务验收与报告记录**：先从公共入口发送最小业务请求，验证请求完成和模型名称；验收完成后
+4. **服务验收与报告记录**：按部署类型执行对应模式文档定义的验收策略；验收完成后
    将实际部署配置和验收结果写入部署目录 `/data/boom/deployment`。
 
 ## 1. 输入检查
@@ -144,19 +144,7 @@ multi-node PD-disaggregated deployment：Proxy → Decode/Prefill → KV Transfe
 
 ## 4. 服务验收与报告记录
 
-部署完成后先进行服务验收：从公共入口发送最小业务请求，验证请求可以成功完成、返回的模型名称与部署的 `served_model_name` 一致。并行策略等内部配置不纳入验收。例如：
-
-```bash
-curl --fail-with-body http://<public_endpoint>/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model": "<served_model_name>",
-    "messages": [{"role": "user", "content": "请用一句话说明服务已启动。"}],
-    "max_tokens": 16
-  }'
-```
-
-不要把单纯 HTTP 200 当作业务成功，响应必须包含可解析的选择结果和非空文本。验收失败时按第 3 节的精确清理处理，报告 `failed` 或 `partially_started`。
+服务验收按部署类型执行对应模式文档定义的验收策略：普通多机和 PD 分离的模式文档各自规定验收入口和验收内容；并行策略等内部配置不纳入验收。验收失败时按第 3 节的精确清理处理，报告 `failed` 或 `partially_started`。
 
 验收完成后，将实际部署配置和验收结果写入部署目录 `/data/boom/deployment`（容器内 `/models/deployment`）：
 

@@ -7,7 +7,7 @@
 - 每个节点空闲 NPU 的确认规则和通信环境变量；
 - 普通多机的并行策略；
 - 普通多机的配置参数和 Master/Worker 的部署命令；
-- 启动后的分布式状态检查。
+- 启动后的分布式状态检查和对话服务验收。
 
 本文件由主 Skill 在普通多机模式下与 `common.md` 共同作为参考；公共规则和模式专属
 规则分别以对应文档为准。
@@ -22,8 +22,8 @@
 2. **并行策略**：采用节点内 TP、节点间 DP，确定并行参数和 rank 分配。
 3. **配置参数和部署**：确认配置参数并生成启动命令，先启动 Master，
    通过有界启动检查后并行启动全部 Worker。
-4. **启动后分布式状态检查**：统一检查 Master 和全部 Worker，
-   全部通过后进入 `common.md` 第 4 节的业务验收。
+4. **启动后检查和服务验收**：统一检查 Master 和全部 Worker 的分布式状态，
+   通过后只对 Master 做对话服务验收。
 
 ## 1. 空闲卡确认和通信环境变量
 
@@ -105,7 +105,7 @@ Docker 的公共网络、Ascend 挂载、模型挂载、日志目录和设备参
 
 命令约束：
 
-- 启动日志保存到 `/models/deployment` 日志目录；
+- 启动日志保存到 `/models/deployment` 日志目录，文件名带部署时间戳 `<timestamp>`（格式 `YYYYMMDD-HHMM`，精确到分钟），同一次部署所有节点使用同一时间戳；
 - 部署若出现 graph capture 失败时，使用 `--enforce-eager`；
 - 命令行参数不得擅自填入未知值；本节未说明的参数均使用默认值，不出现在部署命令中。
 
@@ -137,7 +137,7 @@ docker run --detach \
     --gpu-memory-utilization <gpu_memory_utilization> \
     --trust-remote-code \
     <optional_hardware_or_model_flags> \
-    > /models/deployment/vllm-master.log 2>&1'
+    > /models/deployment/vllm-master-<timestamp>.log 2>&1'
 ```
 
 Master 约束：
@@ -174,7 +174,7 @@ docker run --detach \
     --trust-remote-code \
     <optional_hardware_or_model_flags> \
     --headless \
-    > /models/deployment/vllm-worker-<rank>.log 2>&1'
+    > /models/deployment/vllm-worker-<rank>-<timestamp>.log 2>&1'
 ```
 
 Worker 约束：
@@ -183,17 +183,33 @@ Worker 约束：
 - 必须添加 `--headless`；
 - 每个 Worker 使用自己的数据面 IP、通信网卡、空闲 Device 列表，`--data-parallel-address` 仍指向 Master。
 
-## 4. 启动后分布式状态检查
+## 4. 启动后检查和服务验收
 
-本节对应部署流程第 6 步，只检查普通多机启动后的模式专属状态，不重复公共输入检查、
-Docker 预检、清理或公共业务验收：
+只做普通多机启动后的模式专属状态检查和对话服务验收，不重复公共输入检查、Docker预检或清理。
 
+整体：
 - 所有 Master/Worker 容器处于运行状态；
 - DP rank 覆盖 `0..N-1`，没有重复或缺失；
-- Master 的 DP RPC 端口可访问；
-- Master 的 `/v1/models` 返回预期 `served_model_name`；
-- Worker 使用 `--headless`，其进程存在、rank 正确连续，并且可以访问 Master 的 DP RPC；
 - 日志没有未处理的通信、NPU、模型加载或参数错误。
 
-Worker 不检查 `/v1/models`；Worker 的启动状态以 headless 进程、rank、DP RPC 可达性和日志
-为准。以上检查全部通过后，进入 `common.md` 第 4 节的业务验收。
+Master：
+- 节点进程存在，`/v1/models` 返回预期 `served_model_name`。
+
+Worker：
+- 节点进程存在、rank 正确连续，不检查 `/v1/models`。
+
+分布式状态检查全部通过后，只对 Master 做对话服务验收；Worker 不做对话验收。向
+Master 的 API 端口发送最小对话请求，验证请求成功完成、返回的模型名称与
+`served_model_name` 一致：
+
+```bash
+curl --fail-with-body http://<master_node_ip>:<port>/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "<served_model_name>",
+    "messages": [{"role": "user", "content": "请用一句话说明服务已启动。"}],
+    "max_tokens": 256
+  }'
+```
+
+不要把单纯 HTTP 200 当作业务成功，响应必须包含可解析的选择结果和非空文本。验收通过后按 `common.md` 第 4 节记录部署报告。
