@@ -100,7 +100,7 @@ Docker 的公共网络、Ascend 挂载、模型挂载、日志目录和设备参
 | `model_path` | 容器内统一路径，固定为 `/models/model`；各节点的宿主机模型路径只出现在 `<common-docker-args>` 的挂载参数中 |
 | `served_model_name` | Master 和所有 Worker 一致 |
 | `master_node_ip` | Master 的数据面 IP；所有 Worker 可访问 |
-| `data_parallel_rpc_port` | DP 节点间 RPC 通信端口；Master 上可监听、所有 Worker 可访问 |
+| `data_parallel_rpc_port` | DP 节点间 RPC 通信端口；Master 上可监听，默认 `51216`，端口被占用时切换其他端口，所有 Worker 可访问 |
 | `network_interface` | 每个节点用于 HCCL/Gloo/TP 通信的物理网卡名，填入第 1.2 节的 `*_SOCKET_IFNAME` 环境变量 |
 | `port` | 每个节点的 vLLM API 端口；默认 `8899`，所有节点采用相同端口号，端口被占用时切换其他端口 |
 | `max_model_len` | 模型上下文长度；用户未指定时默认 `4096` |
