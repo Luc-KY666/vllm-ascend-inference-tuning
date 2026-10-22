@@ -1,7 +1,7 @@
 # multi-node deployment
 
 本文件定义普通 vLLM-Ascend 多机部署的模式专属规则。公共输入检查、SSH/Docker
-边界、宿主机运行时预检、通用挂载、容器清理、业务验收和报告记录统一按
+边界、宿主机运行时预检、通用挂载、容器清理和报告记录统一按
 [common.md](common.md) 执行；本文件只负责以下内容：
 
 - 每个节点空闲 NPU 的确认规则和通信环境变量；
@@ -15,7 +15,7 @@
 ## 部署流程（总览）
 
 普通多机部署由 `common.md` 负责公共输入检查、宿主机运行时预检、Docker 边界、
-通用失败处理、清理和公共业务验收。本节只描述普通多机部署的专属启动流程：
+通用失败处理、清理和报告记录。本节只描述普通多机部署的专属部署流程：
 
 1. **空闲卡确认和通信环境变量**：确认每个节点的空闲 NPU 及其 Device 列表，
    生成通信环境变量。
@@ -106,6 +106,7 @@ Docker 的公共网络、Ascend 挂载、模型挂载、日志目录和设备参
 命令约束：
 
 - 启动日志保存到 `/models/deployment` 日志目录，文件名带部署时间戳 `<timestamp>`（格式 `YYYYMMDD-HHMM`，精确到分钟），同一次部署所有节点使用同一时间戳；
+- 部署量化后的模型时，启动命令必须加上 `--quantization ascend`；
 - 部署若出现 graph capture 失败时，使用 `--enforce-eager`；
 - 命令行参数不得擅自填入未知值；本节未说明的参数均使用默认值，不出现在部署命令中。
 
@@ -136,7 +137,6 @@ docker run --detach \
     --max-num-seqs <max_num_seqs> --max-model-len <max_model_len> \
     --gpu-memory-utilization <gpu_memory_utilization> \
     --trust-remote-code \
-    <optional_hardware_or_model_flags> \
     > /models/deployment/vllm-master-<timestamp>.log 2>&1'
 ```
 
@@ -172,7 +172,6 @@ docker run --detach \
     --max-num-seqs <max_num_seqs> --max-model-len <max_model_len> \
     --gpu-memory-utilization <gpu_memory_utilization> \
     --trust-remote-code \
-    <optional_hardware_or_model_flags> \
     --headless \
     > /models/deployment/vllm-worker-<rank>-<timestamp>.log 2>&1'
 ```
