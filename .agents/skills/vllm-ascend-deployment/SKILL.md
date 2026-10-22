@@ -125,32 +125,9 @@ skill 必须默认通过执行平台的 `sandbox_permissions=require_escalated` 
 **multi-node PD-disaggregated deployment**，读取
 [references/multi-node/multi-node-PD-disaggregated-deployment.md](references/multi-node/multi-node-PD-disaggregated-deployment.md)。
 
-1. 读取 [multi-node/common.md](references/multi-node/common.md) 和上面对应的部署说明，
-   将 Provider 提供的节点、服务、挂载、设备、端口、依赖和最终 argv 组织成当前 attempt
-   的 `deployment-plan.json`。计划必须在任何远端变更前落盘。
-2. 通过每个节点的 SSH 执行只读预检：确认宿主机身份、Docker 权限、镜像、固定 Ascend
-   驱动挂载、NPU 设备、模型目录、通信网卡和端口。任一节点的固定挂载、设备或模型路径
-   不满足时立即停止，不启动任何容器。
-3. 使用远端预检事实执行静态 OOM 和并行度检查。**multi-node deployment** 按每节点 TP、跨节点 DP
-   计算；**multi-node PD-disaggregated deployment** 按 Prefill、Decode 服务分别检查。不要把控制端可见设备数当成远端
-   设备数，也不要自动扩大 TP、替换节点或等待资源释放。
-4. 按模式文档执行远端容器启动：
-   - **multi-node deployment**：先启动 Master，只确认容器和主进程没有立即退出，随后立即并行启动
-     所有 Worker；不能用 Master readiness 阻塞 Worker；
-   - **multi-node PD-disaggregated deployment**：先启动 KV Transfer/Mooncake，再启动 Prefill/Decode，最后启动 Proxy，
-     依赖层 readiness 通过后才能进入下一层。
-5. 每个容器都必须使用计划中的稳定名称、`boom.skill.*` 所有权标签、固定驱动挂载、
-   NPU 设备、模型挂载和服务 argv。启动后先通过 SSH 执行 `docker inspect`，核对实际
-   挂载和设备与计划一致；不一致时停止当前 attempt 的后续启动并进入清理。
-6. 按 [multi-node/common.md](references/multi-node/common.md) 第 4 节执行服务验收：
-   从公共入口发送最小业务请求，验证请求完成和返回的模型名称；并行策略等内部配置
-   不纳入验收。
-7. 发生 graph capture 失败时，按对应模式对全部相关 rank 一致增加 `--enforce-eager`，
-   最多执行一次完整重启；参数错误、HCCL/NPU 错误、模型路径错误和 connector 错误
-   不得通过无限 readiness 轮询掩盖。
-8. 将脱敏远端命令、时间戳、节点事实、容器 inspect、readiness、业务请求和清理结果
-   写入 `<attempt-dir>/commands.log` 与统一的 `deployment_report.json`。旧的
-   `.boom-skill/deployments/<id>/result.json` 不再创建。
+多机部署按 [multi-node/common.md](references/multi-node/common.md) 的执行流程执行：
+输入检查、宿主机运行时预检、部署、服务验收与报告记录；并行策略、配置参数、启动命令
+和启动后检查等模式专属规则按上面对应的部署说明执行。
 
 多机服务成功后，报告中的 `service.url`、模型身份和公共入口交还 Provider；多机服务
 部分启动、rank 不完整、Proxy 不可用或清理失败时必须分别报告，不得转换成单机的
@@ -180,7 +157,7 @@ skill 必须默认通过执行平台的 `sandbox_permissions=require_escalated` 
   的端口。
 - `service_ready` 只表示部署层健康、模型身份和最小请求通过，不表示压测成功或参数最优。
 - 不实现外部 Provider 的资源租约、搜索调度、candidate 管理或独立 verifier。
-- 多机部署的远端资源结论只来自计划节点上的 SSH 预检；不等待设备释放、不轮询，
+- 多机部署的远端资源结论只来自目标节点的 SSH 预检；不等待设备释放、不轮询，
   也不回退到控制端或 Agent 容器内的 Docker daemon。
-- 多机容器清理只处理同时匹配当前 attempt 所有权标签和计划中容器名的对象，禁止使用
+- 多机容器清理只处理与本次部署容器名精确匹配的对象，禁止使用
   `pkill`、宽范围 `docker rm` 或通过端口占用者推断所有权。
