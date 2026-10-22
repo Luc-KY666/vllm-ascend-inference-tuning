@@ -67,19 +67,21 @@ ASCEND_RT_VISIBLE_DEVICES=<本节点已确认的 Device 列表>
 
 ## 2. 并行策略
 
-vLLM 支持多种并行策略（TP、DP、PP、EP 及其组合），本文件只采用其中一种：**节点内
-TP、节点间 DP**——每个节点内选中的全部 NPU 构成一个 TP 组，每个节点是一个 DP rank，
+vLLM 支持多种并行策略（TP、DP、PP、EP 及其组合），当前 skill 暂时仅支持其中一种：
+**节点内 TP、节点间 DP**——每个节点内选中的全部 NPU 构成一个 TP 组，每个节点是一个 DP rank，
 不自动选择 PP、EP、跨节点 TP 或其他并行方式。
 
 参数按此确定：`tensor_parallel_size` = 单节点使用的 NPU 数（各节点一致，除非已有
 审核模板明确规定不同），
 `data_parallel_size` = 节点数，`data_parallel_size_local` = 1；Master 为 DP rank `0`，
 Worker 依次为 `1..N-1`，rank 按节点顺序分配，与物理 NPU 编号无关。所有节点使用
-相同的 `data_parallel_size`。任一节点的空闲卡数小于 `tensor_parallel_size` 时，
-本次部署不可执行，不在继续执行如下流程，并向用户报告不可部署原因。
+相同的 `data_parallel_size`。
 
 以 3 个节点、每节点 4 张卡为例：`tensor_parallel_size=4`、`data_parallel_size=3`，
 Master 为 rank `0`，两个 Worker 为 rank `1`、`2`。
+
+在确认并行参数后，若任一节点的空闲卡数小于 `tensor_parallel_size` 时，明确判定为**不可部署**：停止执行
+后续部署流程，并向用户报告不可部署的节点和原因。
 
 ## 3. 配置参数和部署
 

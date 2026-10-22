@@ -117,8 +117,7 @@ skill 必须默认通过执行平台的 `sandbox_permissions=require_escalated` 
 
 ## 多机 Docker 执行流程
 
-当 `execution.deployment_type` 为 `multi-node deployment` 或 `multi-node PD-disaggregated deployment` 时，
-使用本节流程；不要执行上面的单机本地 `npu-smi`、本地端口或本地 `vllm serve` 流程。
+当 `execution.deployment_type` 为 `multi-node deployment` 或 `multi-node PD-disaggregated deployment` 时，使用本节流程。
 
 用户提出“普通多机 vLLM”或仅说“多机部署”时，使用 **multi-node deployment**，读取
 [references/multi-node/multi-node-deployment.md](references/multi-node/multi-node-deployment.md)。
@@ -126,7 +125,7 @@ skill 必须默认通过执行平台的 `sandbox_permissions=require_escalated` 
 **multi-node PD-disaggregated deployment**，读取
 [references/multi-node/multi-node-PD-disaggregated-deployment.md](references/multi-node/multi-node-PD-disaggregated-deployment.md)。
 
-多机部署按 [multi-node/common.md](references/multi-node/common.md) 的执行流程执行：
+多机部署时严格按照 [multi-node/common.md](references/multi-node/common.md) 的执行流程执行：
 输入检查、宿主机运行时预检、部署、服务验收与报告记录；并行策略、配置参数、启动命令
 和启动后检查等模式专属规则按上面对应的部署说明执行。
 
