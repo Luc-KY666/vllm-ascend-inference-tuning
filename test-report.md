@@ -48,4 +48,4 @@
     - 将 `.agents` 目录拷贝到 `goal-plus-playground/scenarios/boom-new/` 下
     - 将 `tasks/qwen3-coder-30b-long-prefill-search` 拷贝到 `goal-plus-playground/tasks/boom/` 下，随后修改其中的 `input.md`
     - 按照 playground 的流程创建 workspace，然后在 workspace 中启动 Pi 并复制 `goal-pi.md`
-- 目前使用 Pi + DeepSeek-V4-Pro 能够完成创行推理部署调优的流程，但执行期间还是会有一些问题，还需要测试调整
+- 目前使用 Pi + DeepSeek-V4-Pro 能够完成串行推理部署调优的流程，执行报告见 [search_report](./SEARCH_REPORT.md)。本次执行由于未固定 `vllm bench serve` 的 `--seed` 参数，导致针对同一个参数配置出现了 `P95 TTFT` 测量的浮动，现已在 SKILL 中修复。现在执行中遇到的大部分问题都是 agent 与 goal-plus 交互时的小问题，均可由 agent 自行修复，可能是上下文遗忘导致的。

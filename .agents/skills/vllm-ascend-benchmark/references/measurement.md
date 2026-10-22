@@ -18,6 +18,7 @@ vllm bench serve --help=all
 --dataset-name --dataset-path
 --num-prompts --max-concurrency --num-warmups
 --request-rate --burstiness
+--seed
 --temperature（Provider 显式提供或按默认值 0 传入时）
 --percentile-metrics --metric-percentiles
 --save-result --result-dir 或等价结果输出参数
@@ -39,6 +40,7 @@ vllm bench serve \
   --tokenizer <resolved-tokenizer> \
   --base-url <base-url> \
   --endpoint <endpoint> \
+  --seed 42 \
 [--temperature <provider-temperature>] \
   --num-prompts <num-prompts> \
   --max-concurrency <max-concurrency> \
