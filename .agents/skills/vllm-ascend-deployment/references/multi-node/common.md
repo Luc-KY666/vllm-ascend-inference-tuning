@@ -8,7 +8,7 @@
 
 ## 执行流程
 
-多机部署必须按以下顺序执行，前一阶段失败时停止，不得跳到远端变更或服务启动：
+多机部署必须按以下顺序执行，前一阶段失败时停止，不得跳到远端变更或服务启动。对目标节点的操作通过对应 SSH 连接执行，当前 Agent 所在节点本身就是目标节点时例外——该节点直接在宿主机本地执行、不经 SSH：
 
 1. **输入检查**：识别部署意图（**multi-node deployment** 或 **multi-node
    PD-disaggregated deployment**），并通过 SSH 验证每个输入节点存在、节点间可连通、
@@ -79,7 +79,7 @@ ssh -o BatchMode=yes -o ConnectTimeout=5 -p <ssh_port> <user>@<host> \
    done'
 ```
 
-所有 Docker 操作都是在目标宿主机上执行的远端 payload，通过对应节点的 SSH 连接执行；不得在 Pi/Agent 容器内直接执行本地命令或启动 `dockerd`，也不得使用 `/var/run/docker.sock`、`DOCKER_HOST` 或本地 Docker context 绕过 SSH 边界。普通多机部署与PD分类多机部署对于docker容器的拉起可以采用相同的格式，8卡样例挂载命令模版如下：
+所有 Docker 操作都在目标宿主机上执行，通过对应节点的 SSH 连接；当前 Agent 所在节点本身就是目标节点时，该节点在宿主机本地执行、不经 SSH。不得在 Pi/Agent 容器内直接执行本地命令或启动 `dockerd`，也不得使用 `/var/run/docker.sock`、`DOCKER_HOST` 或本地 Docker context 绕过 SSH 边界。普通多机部署与PD分类多机部署对于docker容器的拉起可以采用相同的格式，8卡样例挂载命令模版如下：
 
 ```bash
 docker run --detach \
