@@ -29,9 +29,10 @@
 
 ### 1.1 空闲卡确认
 
-`common.md` 公共预检对每个节点执行 `npu-smi info`：节点上有几张 NPU 卡，该节点
-就有几张**可用卡**；可用卡中卡上无进程的才是**空闲卡**。判定以该节点的探测结果
-为准，不重复探测，不等待其他任务释放设备，也不用控制端可见卡替代远端事实。
+`common.md` 公共预检对每个节点执行 `npu-smi info`，可得到每张卡的 HBM 大小和
+是否存在进程。节点上有几张 NPU 卡，该节点就有几张**可用卡**；可用卡上无进程
+的才是**空闲卡**。判定以该节点的探测结果为准，不重复探测，不等待其他任务释放
+设备，也不用控制端可见卡替代远端事实。
 
 每张空闲卡的最大内存从同一份 `npu-smi info` 输出读取：Memory-Usage 列显示
 已用/总量（单位 MB），总量即该卡的最大内存。
@@ -74,7 +75,8 @@ TP、节点间 DP**——每个节点内选中的全部 NPU 构成一个 TP 组�
 审核模板明确规定不同），
 `data_parallel_size` = 节点数，`data_parallel_size_local` = 1；Master 为 DP rank `0`，
 Worker 依次为 `1..N-1`，rank 按节点顺序分配，与物理 NPU 编号无关。所有节点使用
-相同的 `data_parallel_size`。
+相同的 `data_parallel_size`。任一节点的空闲卡数小于 `tensor_parallel_size` 时，
+本次部署不可执行，不在继续执行如下流程，并向用户报告不可部署原因。
 
 以 3 个节点、每节点 4 张卡为例：`tensor_parallel_size=4`、`data_parallel_size=3`，
 Master 为 rank `0`，两个 Worker 为 rank `1`、`2`。
@@ -93,7 +95,7 @@ Docker 的公共网络、Ascend 挂载、模型挂载、日志目录和设备参
 | 参数 | 普通多机规则 |
 |---|---|
 | `image` | 用户提供，每个节点使用用户指定镜像 |
-| `model_path` | 每个节点本地存在，按 `common.md` 挂载到相同容器路径 `/models/model` |
+| `model_path` | 容器内统一路径，固定为 `/models/model`；各节点的宿主机模型路径只出现在 `<common-docker-args>` 的挂载参数中 |
 | `served_model_name` | Master 和所有 Worker 一致 |
 | `master_node_ip` | Master 的数据面 IP；所有 Worker 可访问 |
 | `data_parallel_rpc_port` | DP 节点间 RPC 通信端口；Master 上可监听、所有 Worker 可访问 |

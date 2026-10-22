@@ -10,7 +10,7 @@ description: 在外部 Provider 冻结的模型、设备、端口和输出合同
 分为三类：
 
 - `single-node deployment`：模型服务、NPU 设备、端口和运行时都位于同一个目标主机；直接在该主机的执行环境中启动和验收 vLLM-Ascend 服务，不涉及跨节点通信、SSH 控制或 Docker 编排。
-- `multi-node deployment`：模型服务分布在多个目标主机，采用普通 vLLM-Ascend DP/TP 部署且不进行 Prefill/Decode 分离；通过 SSH 连接各目标宿主机并执行 Docker，在所有节点完成协同启动、集群 readiness 和统一业务验收。
+- `multi-node deployment`：模型服务分布在多个目标主机，采用普通 vLLM-Ascend DP/TP 部署且不进行 Prefill/Decode 分离；通过 SSH（Agent 所在目标节点除外，直接本地执行）在各目标宿主机执行 Docker，先启动 Master 再并行启动 Worker，启动后统一检查分布式状态并对 Master 做对话服务验收。
 - `multi-node PD-disaggregated deployment`：Prefill、Decode、KV Transfer/Mooncake 和 Proxy 服务分布在多个目标主机；通过 SSH 连接各目标宿主机并执行 Docker，按服务依赖顺序启动，并对完整的 Prefill-to-Decode 请求链路进行 readiness 和业务验收。
 
 推荐阶段不启动服务、不占用 NPU 或端口。得到可用的最小 TP 后，skill 将推荐值原子写回
@@ -31,10 +31,9 @@ Bash 环境中探测和执行。
 
 输入字段、默认值和状态边界见 [input-contract.md](references/input-contract.md)。
 
-多机部署的主体输入由 Provider 以拓扑计划提供，至少包括镜像、节点、SSH 连接信息、数据面
-地址、NPU 列表、服务角色、最终 argv、挂载、设备、端口、依赖和 readiness。用户不需要提供
-`deployment_id`；Skill 从当前 attempt 目录生成内部实例标识，并将其用于容器名、标签和报告。
-多机计划使用当前 attempt 目录，不再使用旧的 `.boom-skill/deployments/` 路径。
+多机部署由 Provider 提供镜像、节点（SSH 地址和数据面 IP）、模型路径、
+`served_model_name` 和可选的端口、运行参数或指定卡；最终启动命令、挂载和设备由
+Skill 按多机公共规则和对应部署说明生成，不由 Provider 提供。
 
 ## 执行权限
 
