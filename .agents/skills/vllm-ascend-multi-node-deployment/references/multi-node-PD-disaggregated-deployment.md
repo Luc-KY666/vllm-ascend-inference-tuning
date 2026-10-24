@@ -386,8 +386,7 @@ Docker 预检、清理或公共业务验收：
 - 在 `common.md` 第 4 节最小业务请求（PD 部署的公共入口是 Proxy）的时间窗口内，
   Prefill 和 Decode 两侧日志均有该请求的处理记录——这是请求真实经过 P→D 链路的
   证据，仅 Proxy 返回成功不能证明；
-- 池化组合的 Mooncake Master 容器处于运行状态，控制端口可访问，并可重发一次
-  相同前缀的请求验证 KV Pool 复用。
+- 池化组合的 Mooncake Master 容器处于运行状态，控制端口可访问，P/D 客户端注册检查：master 日志 Master Admin Metrics 中 Clients 计数等于全部 Prefill/Decode 的 worker 总数且 role=leader、state=serving、service_ready=true；满足即证明 P/D 与池的链路已接通。
 
 只有带 `AscendStoreConnector` 的池化组合才执行最后一条，其余 connector 跳过。
 
