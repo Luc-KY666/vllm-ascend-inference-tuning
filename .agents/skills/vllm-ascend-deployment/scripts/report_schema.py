@@ -1,218 +1,181 @@
-"""Validate the canonical vllm-ascend deployment report contract."""
+"""Validate the final vllm-ascend deployment report contract."""
 
 from __future__ import annotations
 
 import argparse
 import json
-from collections import defaultdict
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = "vllm-ascend-deployment-report-v2"
-STATUS_VALUES = {"running", "preflight_failed", "service_ready", "failed"}
+SCHEMA_VERSION = "vllm-ascend-deployment-report-v3"
+STATUS_VALUES = {"success", "failed", "preflight_failed"}
 TOP_LEVEL_KEYS = {
-    "schema_version", "status", "attempt", "input", "environment", "stages",
-    "artifacts", "failure", "timings",
+    "schema_version",
+    "status",
+    "model",
+    "resources",
+    "service",
+    "launch",
+    "failure",
+    "errors",
 }
-STAGE_KEYS = {"input_validation", "static_oom", "tp_resolution", "resources", "service", "cleanup"}
-PROBE_ARTIFACTS = ("environment_probe", "sandbox_detection", "serve_help", "bench_help")
-FORBIDDEN_ENVIRONMENT_KEYS = {
-    "probe_path", "sandbox_path", "environment_probe", "sandbox_detection", "serve_help", "bench_help",
+MODEL_KEYS = {"name", "weights_path"}
+RESOURCE_KEYS = {"npu", "port"}
+SERVICE_KEYS = {
+    "backend",
+    "base_url",
+    "endpoint",
+    "health_endpoint",
+    "models_endpoint",
+    "tokenizer",
 }
-FORBIDDEN_INPUT_KEYS = {
-    "environment_probe", "sandbox_detection", "serve_help", "bench_help", "probe_path", "sandbox_path",
+LAUNCH_KEYS = {"tp", "dp", "mns", "mnbt", "parameters"}
+FAILURE_KEYS = {"stage", "type", "reason"}
+ERROR_FIELDS = {"stage", "type", "message", "recoverable", "resolved"}
+FORBIDDEN_KEYS = {
+    "attempt",
+    "input",
+    "environment",
+    "stages",
+    "artifacts",
+    "timings",
+    "cleanup",
+    "preflight",
+    "oom",
+    "source",
+    "metrics",
+    "throughput",
 }
-FORBIDDEN_ALIASES = {
-    "inputs", "model", "deployment", "resources", "preflight", "service_identity_valid", "checks", "oom", "error",
-}
-INTERMEDIATE_NAMES = (
-    "deployment.json", "static-oom-input.json", "static-oom-report.json", "npu-resource-probe.json",
-    "port-resource-probe.json", "acceptance-checks.json", "cleanup.json",
-)
 
 
-def _find_keys(value: Any, forbidden: set[str], prefix: str = "") -> list[str]:
-    found: list[str] = []
-    if isinstance(value, Mapping):
-        for key, child in value.items():
-            key_path = f"{prefix}.{key}" if prefix else str(key)
-            if str(key) in forbidden:
-                found.append(key_path)
-            found.extend(_find_keys(child, forbidden, key_path))
-    elif isinstance(value, list):
-        for index, child in enumerate(value):
-            found.extend(_find_keys(child, forbidden, f"{prefix}[{index}]"))
-    return found
-
-
-def _strings(value: Any):
-    if isinstance(value, Mapping):
-        for child in value.values():
-            yield from _strings(child)
-    elif isinstance(value, list):
-        for child in value:
-            yield from _strings(child)
-    elif isinstance(value, str):
-        yield value
-
-
-def _environment_path_keys(value: Any, prefix: str = "environment") -> list[str]:
-    found: list[str] = []
-    if isinstance(value, Mapping):
-        for key, child in value.items():
-            key_path = f"{prefix}.{key}"
-            lowered = str(key).lower()
-            if "path" in lowered or lowered in FORBIDDEN_ENVIRONMENT_KEYS:
-                found.append(key_path)
-            found.extend(_environment_path_keys(child, key_path))
-    elif isinstance(value, list):
-        for index, child in enumerate(value):
-            found.extend(_environment_path_keys(child, f"{prefix}[{index}]"))
-    return found
-
-
-def artifact_path_index(report: Mapping[str, Any]) -> dict[str, list[str]]:
-    """Return every non-null path-like value under artifacts and its owners."""
-    locations: dict[str, list[str]] = defaultdict(list)
-
-    def visit(value: Any, path: str, path_value: bool = False) -> None:
-        if isinstance(value, Mapping):
-            for key, child in value.items():
-                key_name = str(key)
-                child_is_path = (
-                    key_name in PROBE_ARTIFACTS
-                    or key_name in {"server_log", "command_transcript", "path", "file", "filename"}
-                    or key_name.endswith("_path")
-                )
-                visit(child, f"{path}.{key}", child_is_path)
-        elif isinstance(value, list):
-            for index, child in enumerate(value):
-                visit(child, f"{path}[{index}]", path_value)
-        elif path_value and isinstance(value, str) and value:
-            locations[value].append(path)
-
-    artifacts = report.get("artifacts")
-    if isinstance(artifacts, Mapping):
-        visit(artifacts, "artifacts")
-    return dict(locations)
-
-
-def _value_locations(value: Any, target: str, prefix: str = "") -> list[str]:
-    found: list[str] = []
-    if isinstance(value, Mapping):
-        for key, child in value.items():
-            found.extend(_value_locations(child, target, f"{prefix}.{key}" if prefix else str(key)))
-    elif isinstance(value, list):
-        for index, child in enumerate(value):
-            found.extend(_value_locations(child, target, f"{prefix}[{index}]"))
-    elif value == target:
-        found.append(prefix)
-    return found
-
-
-def _require_mapping(report: Mapping[str, Any], key: str, errors: list[str]) -> Mapping[str, Any]:
-    value = report.get(key)
+def _require_mapping(value: Any, label: str, errors: list[str]) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
-        errors.append(f"{key} 必须是 object")
+        errors.append(f"{label} 必须是 object")
         return {}
     return value
 
 
+def _check_exact_keys(value: Mapping[str, Any], expected: set[str], label: str, errors: list[str]) -> None:
+    unknown = set(value) - expected
+    missing = expected - set(value)
+    if unknown:
+        errors.append(f"{label} 包含未知字段: {', '.join(sorted(unknown))}")
+    if missing:
+        errors.append(f"{label} 缺少字段: {', '.join(sorted(missing))}")
+
+
+def _find_forbidden_keys(value: Any, prefix: str = "") -> list[str]:
+    found: list[str] = []
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            path = f"{prefix}.{key}" if prefix else str(key)
+            if str(key) in FORBIDDEN_KEYS:
+                found.append(path)
+            found.extend(_find_forbidden_keys(child, path))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            found.extend(_find_forbidden_keys(child, f"{prefix}[{index}]"))
+    return found
+
+
+def _optional_string(value: Any, label: str, errors: list[str]) -> None:
+    if value is not None and (not isinstance(value, str) or not value):
+        errors.append(f"{label} 必须是非空字符串或 null")
+
+
+def _path(value: Any, label: str, errors: list[str]) -> None:
+    if value is not None and (not isinstance(value, str) or not value):
+        errors.append(f"{label} 必须是非空路径或 null")
+
+
+def _errors(report: Mapping[str, Any], errors: list[str]) -> None:
+    value = report.get("errors")
+    if not isinstance(value, list):
+        errors.append("errors 必须是 array")
+        return
+    for index, item in enumerate(value):
+        if not isinstance(item, Mapping):
+            errors.append(f"errors[{index}] 必须是 object")
+            continue
+        missing = ERROR_FIELDS - set(item)
+        unknown = set(item) - ERROR_FIELDS - {"repair_action"}
+        if missing:
+            errors.append(f"errors[{index}] 缺少字段: {', '.join(sorted(missing))}")
+        if unknown:
+            errors.append(f"errors[{index}] 包含未知字段: {', '.join(sorted(unknown))}")
+        for field in ("stage", "type", "message"):
+            if not isinstance(item.get(field), str) or not item.get(field):
+                errors.append(f"errors[{index}].{field} 必须是非空字符串")
+        for field in ("recoverable", "resolved"):
+            if not isinstance(item.get(field), bool):
+                errors.append(f"errors[{index}].{field} 必须是 boolean")
+        if "repair_action" in item and item["repair_action"] is not None and not isinstance(item["repair_action"], str):
+            errors.append(f"errors[{index}].repair_action 必须是字符串或 null")
+
+
+def _failure(report: Mapping[str, Any], errors: list[str]) -> None:
+    value = report.get("failure")
+    if value is None:
+        return
+    failure = _require_mapping(value, "failure", errors)
+    _check_exact_keys(failure, FAILURE_KEYS, "failure", errors)
+    for field in FAILURE_KEYS:
+        if not isinstance(failure.get(field), str) or not failure.get(field):
+            errors.append(f"failure.{field} 必须是非空字符串")
+
+
 def validate_report(report: Mapping[str, Any]) -> list[str]:
-    """Return contract violations; an empty list means the report is canonical."""
+    """Return final-report contract violations; an empty list means valid."""
     errors: list[str] = []
     if report.get("schema_version") != SCHEMA_VERSION:
         errors.append(f"schema_version 必须为 {SCHEMA_VERSION}")
     if report.get("status") not in STATUS_VALUES:
-        errors.append("status 必须是 running、preflight_failed、service_ready 或 failed")
-    unknown = set(report) - TOP_LEVEL_KEYS
-    if unknown:
-        errors.append("报告包含未知顶层字段: " + ", ".join(sorted(unknown)))
-    missing_top = TOP_LEVEL_KEYS - set(report)
-    if missing_top:
-        errors.append("报告缺少顶层字段: " + ", ".join(sorted(missing_top)))
-    old = sorted(set(report) & FORBIDDEN_ALIASES)
-    if old:
-        errors.append("v2 报告不得包含旧字段: " + ", ".join(old))
+        errors.append("status 必须是 success、failed 或 preflight_failed")
+    _check_exact_keys(report, TOP_LEVEL_KEYS, "报告", errors)
+    errors.extend(f"最终报告不得包含中间字段: {path}" for path in _find_forbidden_keys(report))
 
-    _require_mapping(report, "attempt", errors)
-    input_section = _require_mapping(report, "input", errors)
-    input_paths = _find_keys(input_section, FORBIDDEN_INPUT_KEYS, "input")
-    errors.extend(f"input 不得保存 probe/sandbox 路径: {path}" for path in input_paths)
-    _require_mapping(report, "timings", errors)
-    environment = _require_mapping(report, "environment", errors)
-    forbidden = _find_keys(environment, FORBIDDEN_ENVIRONMENT_KEYS, "environment")
-    forbidden.extend(_environment_path_keys(environment))
-    forbidden = sorted(set(forbidden))
-    errors.extend(f"environment 不得保存路径字段: {path}" for path in forbidden)
-    for value in _strings(environment):
-        if any(marker in value.lower() for marker in ("environment_probe", "sandbox-detection", "serve-help", "bench-help")):
-            errors.append("environment 不得保存 probe/help 文件路径")
-            break
+    model = _require_mapping(report.get("model"), "model", errors)
+    _check_exact_keys(model, MODEL_KEYS, "model", errors)
+    _optional_string(model.get("name"), "model.name", errors)
+    _path(model.get("weights_path"), "model.weights_path", errors)
 
-    stages = _require_mapping(report, "stages", errors)
-    errors.extend(f"stages 缺少 {key}" for key in sorted(STAGE_KEYS - set(stages)))
-    for key in sorted(STAGE_KEYS & set(stages)):
-        if not isinstance(stages[key], Mapping):
-            errors.append(f"stages.{key} 必须是 object")
+    resources = _require_mapping(report.get("resources"), "resources", errors)
+    _check_exact_keys(resources, RESOURCE_KEYS, "resources", errors)
+    npu = resources.get("npu")
+    if not isinstance(npu, list) or any(not isinstance(value, (int, str)) or isinstance(value, bool) for value in npu):
+        errors.append("resources.npu 必须是 NPU ID 数组")
+    port = resources.get("port")
+    if port is not None and (not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535):
+        errors.append("resources.port 必须是 1-65535 的整数或 null")
 
-    artifacts = _require_mapping(report, "artifacts", errors)
-    probe = artifacts.get("probe")
-    if not isinstance(probe, Mapping):
-        errors.append("artifacts.probe 必须是 object")
-    else:
-        unknown_probe = set(probe) - set(PROBE_ARTIFACTS)
-        if unknown_probe:
-            errors.append("artifacts.probe 包含未知字段: " + ", ".join(sorted(unknown_probe)))
-        missing_probe = set(PROBE_ARTIFACTS) - set(probe)
-        if missing_probe:
-            errors.append("artifacts.probe 缺少字段: " + ", ".join(sorted(missing_probe)))
-        for key in PROBE_ARTIFACTS:
-            value = probe.get(key)
-            if value is not None and (not isinstance(value, str) or not value):
-                errors.append(f"artifacts.probe.{key} 必须是非空路径或 null")
-    raw_logs = artifacts.get("raw_logs")
-    if not isinstance(raw_logs, Mapping):
-        errors.append("artifacts.raw_logs 必须是 object")
-    else:
-        unknown_logs = set(raw_logs) - {"server_log", "command_transcript"}
-        missing_logs = {"server_log", "command_transcript"} - set(raw_logs)
-        if unknown_logs:
-            errors.append("artifacts.raw_logs 只能包含 server_log 和 command_transcript")
-        if missing_logs:
-            errors.append("artifacts.raw_logs 缺少字段: " + ", ".join(sorted(missing_logs)))
-    for key in set(artifacts) - {"probe", "raw_logs"}:
-        errors.append(f"artifacts 不得包含旧分组: {key}")
+    service = _require_mapping(report.get("service"), "service", errors)
+    _check_exact_keys(service, SERVICE_KEYS, "service", errors)
+    _optional_string(service.get("backend"), "service.backend", errors)
+    _optional_string(service.get("base_url"), "service.base_url", errors)
+    _path(service.get("tokenizer"), "service.tokenizer", errors)
+    for field in ("endpoint", "health_endpoint", "models_endpoint"):
+        value = service.get(field)
+        if not isinstance(value, str) or not value.startswith("/") or value.startswith("//") or "://" in value:
+            errors.append(f"service.{field} 必须是 HTTP 路径")
 
-    for path, locations in artifact_path_index(report).items():
-        if len(locations) > 1:
-            errors.append(f"artifact 路径重复: {path} ({', '.join(locations)})")
-        all_locations = _value_locations(report, path)
-        canonical = set(locations)
-        outside = [location for location in all_locations if location not in canonical]
-        if outside:
-            errors.append(f"artifact 路径重复: {path} ({', '.join(locations + outside)})")
+    launch = _require_mapping(report.get("launch"), "launch", errors)
+    _check_exact_keys(launch, LAUNCH_KEYS, "launch", errors)
+    for field in ("tp", "dp", "mns", "mnbt"):
+        value = launch.get(field)
+        if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value <= 0):
+            errors.append(f"launch.{field} 必须是正整数或 null")
+    parameters = launch.get("parameters")
+    if not isinstance(parameters, Mapping):
+        errors.append("launch.parameters 必须是 object")
 
-    failure = report.get("failure")
-    if failure is not None and not isinstance(failure, Mapping):
-        errors.append("failure 必须是 object 或 null")
-    elif isinstance(failure, Mapping) and failure.get("artifacts") is not None:
-        refs = failure["artifacts"]
-        if isinstance(refs, str):
-            refs = [refs]
-        if not isinstance(refs, list) or any(
-            not isinstance(ref, str) or not ref.startswith("artifacts.") for ref in refs
-        ):
-            errors.append("failure.artifacts 必须使用 artifacts.* 逻辑引用")
-
-    for value in _strings(report):
-        lowered = value.lower()
-        for marker in INTERMEDIATE_NAMES:
-            if marker in lowered:
-                errors.append(f"报告不得引用部署侧中间文件: {marker}")
-                break
+    _failure(report, errors)
+    if report.get("status") == "success" and report.get("failure") is not None:
+        errors.append("success 报告的 failure 必须为 null")
+    if report.get("status") in {"failed", "preflight_failed"} and report.get("failure") is None:
+        errors.append("失败报告必须提供 failure")
+    _errors(report, errors)
     return errors
 
 
@@ -228,10 +191,10 @@ def main(argv: list[str] | None = None) -> int:
     if not isinstance(value, Mapping):
         print("报告必须是 JSON object")
         return 2
-    errors = validate_report(value)
-    if errors:
-        for error in errors:
-            print(error)
+    violations = validate_report(value)
+    if violations:
+        for violation in violations:
+            print(violation)
         return 1
     print("deployment report valid")
     return 0

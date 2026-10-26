@@ -1,8 +1,12 @@
 # 部署输入契约
 
 Provider 输入由 `scripts/input_contract.py` 一次规范化。脚本只返回 stdout JSON，不创建
-目录、不写 `deployment.json`，agent 将返回对象直接放入 `input.normalized` 和
-`stages.input_validation`，避免阶段之间重复读写。
+目录、不写 `deployment.json`，agent 将返回对象保存在内存中，供静态 OOM、TP 决策和服务
+启动复用，避免阶段之间重复读写。
+
+部署接口可选声明 `service.backend`、`service.endpoint` 和 `service.tokenizer`；缺省值分别为
+`vllm`、`/v1/chat/completions` 和模型路径。部署完成后只把最终接口写入报告的 `service`，
+供 benchmark 直接复用。
 
 ## Provider 输入
 
@@ -14,6 +18,7 @@ python <skill-root>/scripts/input_contract.py \
   --port-candidates 8117 8118 \
   --preferred-port 8117 \
   --attempt-dir /absolute/attempt-dir \
+  [--backend vllm --endpoint /v1/chat/completions --tokenizer /absolute/model/path] \
   [runtime options]
 ```
 
@@ -45,6 +50,8 @@ python <skill-root>/scripts/input_contract.py \
   < normalized-input.json
 ```
 
-该命令只输出更新后的规范化对象，不读取或写入任何部署文件，也不执行静态 OOM。调用方
-将前后对象和 `static_oom_reused=true`、`recheck_performed=false` 写入报告的
-`stages.tp_resolution`，复用原有 OOM 结果。
+该命令只输出更新后的规范化对象，不读取或写入任何部署文件，也不执行静态 OOM。它只依据
+第一次校验缓存的 `allowed_tp`、设备数量、DP 和 attention heads 做轻量检查，不重新执行完整
+输入契约或读取 `config.json`。调用方将前后对象和 `static_oom_reused=true`、
+`recheck_performed=false` 保存在内存上下文中，复用原有 OOM 结果；最终报告只写入解析后的
+`launch.tp`。

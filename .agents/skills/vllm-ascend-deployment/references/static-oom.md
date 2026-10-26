@@ -14,9 +14,9 @@ python <skill-root>/scripts/static_oom_precheck.py < normalized-oom-input.json
 python <skill-root>/scripts/static_oom_precheck.py --input /path/to/input.json
 ```
 
-脚本不接受 `--output` 或 `--input-artifact`，不创建静态 OOM 输入/报告文件。agent 直接把
-结果写入 `stages.static_oom.input`、`result`、`recommended_tp` 和 `oom`，必要诊断尾部写入
-`diagnostics_tail`。
+脚本结果必须直接汇总到内存中的静态 OOM 上下文；如果执行器需要保留原始输入或 stdout，可
+临时写入 `<attempt-dir>/.work/static_oom/`。清理阶段必须删除这些临时文件，最终报告只
+保留静态 OOM 结论影响的 `launch.tp`，不得写入预检输入、结果或证据。
 
 ## 推荐模式
 
@@ -34,9 +34,8 @@ python <skill-root>/scripts/static_oom_precheck.py --input /path/to/input.json
 }
 ```
 
-脚本按 `allowed_tp` 升序选择第一个明确通过的值。TP 写回只更新
-`stages.tp_resolution`，记录 `static_oom_reused=true`、`recheck_performed=false`，不得因
-写回再次调用静态预检。
+脚本按 `allowed_tp` 升序选择第一个明确通过的值。TP 写回只更新内存中的启动配置，记录
+`static_oom_reused=true`、`recheck_performed=false`，不得因写回再次调用静态预检。
 
 ## 输入和计算
 
@@ -44,6 +43,55 @@ python <skill-root>/scripts/static_oom_precheck.py --input /path/to/input.json
 `hardware.card_memory_bytes`、`hardware.device_count`、`runtime.tp`、`runtime.dp`、
 `max_num_seqs`、显存比例、最低上下文、block size、`allowed_tp` 和 `official_min_tp`。
 缺少 KV Cache 字段、dtype、权重需求或硬件容量时返回 `unknown`。
+
+### 输入 JSON 结构
+
+各字段有严格的层级归属，必须按下述结构放置，不能平铺到顶层：
+
+- `weight_bytes` / `weight_gib` 属于 `model`；
+- `allowed_tp`、`official_min_tp` 属于 `runtime`；
+- `card_memory_bytes`、`device_count` 属于 `hardware`。
+
+```json
+{
+  "recommendation_mode": true,
+  "model": {
+    "model_path": "/absolute/model/path",
+    "served_model_name": "model-name",
+    "weight_bytes": 61066575656,
+    "config": {
+      "vocab_size": 151936,
+      "head_dim": 128,
+      "tie_word_embeddings": false,
+      "torch_dtype": "bfloat16",
+      "num_attention_heads": 32,
+      "num_experts": 128,
+      "hidden_size": 2048,
+      "num_hidden_layers": 48,
+      "intermediate_size": 6144,
+      "num_key_value_heads": 4
+    }
+  },
+  "hardware": {
+    "card_memory_bytes": 68719476736,
+    "device_count": 4
+  },
+  "runtime": {
+    "tp": null,
+    "dp": 1,
+    "max_num_seqs": 32,
+    "max_num_batched_tokens": 4096,
+    "gpu_memory_utilization": 0.9,
+    "min_required_context_len": 4096,
+    "block_size": 128,
+    "allowed_tp": [1, 2, 4],
+    "official_min_tp": 1
+  }
+}
+```
+
+MoE 模型（`config.num_experts` 非空）必须提供明确的 `model.weight_bytes` 或
+`model.weight_gib`，脚本不会从配置推导 MoE 权重需求；缺失时返回 `unknown`。
 
 Dense decoder 的口径为：
 

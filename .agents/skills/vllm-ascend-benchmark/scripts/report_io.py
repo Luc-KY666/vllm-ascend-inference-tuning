@@ -1,4 +1,4 @@
-"""Stateless helpers for benchmark report checkpoints."""
+"""Stateless helpers for final benchmark report output and diagnostics."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from typing import Any, TextIO
 
 
 def atomic_write_report(path: str | os.PathLike[str], report: Any) -> None:
-    """Write a JSON checkpoint through a same-directory temporary file."""
+    """Write a final JSON report through a same-directory temporary file."""
 
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)

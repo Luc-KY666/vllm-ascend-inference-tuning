@@ -1,44 +1,29 @@
 {
-  "schema_version": "vllm-ascend-deployment-report-v2",
-  "status": "running",
-  "attempt": {"id": null, "started_at": null, "updated_at": null},
-  "input": {
-    "provider_payload": {},
-    "normalized": {},
-    "model_config": {"path": null, "sha256": null, "parsed": {}}
+  "schema_version": "vllm-ascend-deployment-report-v3",
+  "status": "success",
+  "model": {
+    "name": null,
+    "weights_path": null
   },
-  "environment": {
-    "status": "not_run",
-    "summary": {},
-    "port_probe_tool": {},
-    "diagnostics_tail": ""
+  "resources": {
+    "npu": [],
+    "port": null
   },
-  "stages": {
-    "input_validation": {"status": "not_run", "result": {}, "errors": [], "warnings": []},
-    "static_oom": {
-      "status": "skipped", "input": {}, "result": {}, "recommended_tp": null,
-      "oom": {"detected": false, "type": null, "evidence": []}, "diagnostics_tail": ""
-    },
-    "tp_resolution": {
-      "status": "not_run", "before": {}, "after": {},
-      "static_oom_reused": false, "recheck_performed": false
-    },
-    "resources": {"status": "not_run", "devices": {}, "ports": {}, "diagnostics_tail": ""},
-    "service": {
-      "status": "not_run", "pid": null, "port": null,
-      "health": {}, "model_check": {}, "chat_check": {}, "diagnostics_tail": ""
-    },
-    "cleanup": {"status": "not_run", "actions": [], "errors": []}
+  "service": {
+    "backend": "vllm",
+    "base_url": null,
+    "endpoint": "/v1/chat/completions",
+    "health_endpoint": "/health",
+    "models_endpoint": "/v1/models",
+    "tokenizer": null
   },
-  "artifacts": {
-    "probe": {
-      "environment_probe": null,
-      "sandbox_detection": null,
-      "serve_help": null,
-      "bench_help": null
-    },
-    "raw_logs": {"server_log": null, "command_transcript": null}
+  "launch": {
+    "tp": null,
+    "dp": null,
+    "mns": null,
+    "mnbt": null,
+    "parameters": {}
   },
   "failure": null,
-  "timings": {}
+  "errors": []
 }

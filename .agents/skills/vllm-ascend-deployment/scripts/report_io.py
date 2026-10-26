@@ -1,4 +1,4 @@
-"""Stateless helpers for deployment report checkpoints."""
+"""Stateless helpers for final deployment report output and diagnostics."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from typing import Any, TextIO
 
 
 def atomic_write_report(path: str | os.PathLike[str], report: Any) -> None:
-    """Write a checkpoint using a same-directory temporary file and os.replace."""
+    """Write a final report using a same-directory temporary file and os.replace."""
 
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)

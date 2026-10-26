@@ -1,8 +1,8 @@
 # NPU 和端口资源预检
 
-资源预检只消费 `input.normalized` 中 Provider 明确提供的设备和端口，不扫描候选范围之外
-的资源，也不创建资源租约。每个 attempt 只执行一次；结构化结果直接写入报告的
-`stages.resources`，随后作为服务启动的输入。
+资源预检只消费内存中规范化输入里的 Provider 明确提供的设备和端口，不扫描候选范围之外
+的资源，也不创建资源租约。每个 attempt 只执行一次；结构化结果保存在内存中，随后作为服务
+启动的输入，最终报告只写入实际选中的 NPU 和端口。
 
 资源检查使用当前执行上下文中的一次 `npu-smi info` 和
 `environment_probe.json.port_probe_tool` 已验证的端口探测工具。端口工具的发现和能力验证
@@ -16,15 +16,15 @@
 `execution_context`、`shell_fingerprint` 和 `port_probe_tool` 选定字段决定本阶段使用的
 Bash、网络命名空间和端口工具。检测到隔离或状态不确定时，probe 阶段已完成唯一一次提权
 请求；本阶段不重新执行沙箱检测、端口工具发现或再次请求提权。平台拒绝、提权失败、
-shell 句柄丢失或选定工具失效时写出 `resource_preflight_failed`，并保留授权状态和命令尾部。
+shell 句柄丢失或选定工具失效时在内存中记录 `resource_preflight_failed`，并保留授权状态和
+命令尾部；最终报告统一在清理完成后一次性写出。
 
 ## NPU 检查
 
 沙箱隔离检测已经执行过一次 `npu-smi info`；本阶段只在确认即将启动服务后再执行一次，
 并把 stdout/stderr 捕获在内存中。除这两次外不得在预检、服务验收或报告整理阶段重复采集。
 不要额外重定向到 `npu-smi-info.txt`；判定完成后将原始输出摘要（或满足报告大小限制的
-完整证据）保留在内存中，必要诊断尾部写入 `stages.resources.diagnostics_tail`；部署侧不
-创建 NPU 资源 JSON。
+完整证据）保留在内存中；部署侧不创建 NPU 资源 JSON，也不把诊断尾部写入最终报告。
 
 agent 根据实际设备的输出格式、表头、状态字段、进程信息及其他可核验内容，逐张判定
 Provider `visible_devices` 中的设备为 `free`、`busy` 或 `unknown`，并在 artifact 中记录
@@ -34,13 +34,13 @@ Provider `visible_devices` 中的设备为 `free`、`busy` 或 `unknown`，并�
 不自动换卡或扩大 TP。
 
 将 `visible_devices`、原始输出摘要、每张卡的 `free`/`busy`/`unknown`、PID、解析规则版本和
-所需数量 `TP * DP` 写入 `stages.resources.devices`。只有根据实际输出明确确认的前
-`TP * DP` 张 free 卡可以写入 `selected_devices`；数量不足时使用
-`failure_type=insufficient_available_devices`。
+所需数量 `TP * DP` 保存在内存中。只有根据实际输出明确确认的前 `TP * DP` 张 free 卡可以
+作为最终 `resources.npu`；数量不足时使用 `failure_type=insufficient_available_devices`。
 
 本次探测是一次性的时间点判定，其结论对当前 attempt 是最终的：当 Provider 可见卡中
-free 数量不足 `TP * DP`（含判定为 busy 或 unknown 的卡）时，立即写出
-`resource_preflight_failed` 失败报告并退出当前 attempt。禁止等待、轮询、重新探测或
+free 数量不足 `TP * DP`（含判定为 busy 或 unknown 的卡）时，立即在内存中记录
+`resource_preflight_failed`，清理并退出当前 attempt。最终报告仍统一在清理完成后写出一次；
+禁止等待、轮询、重新探测或
 以任何形式挂起以等待设备释放——busy/unknown 的卡不会被重新探测，本流程中不存在
 “等待释放后继续”的阶段。
 
@@ -56,8 +56,8 @@ free 数量不足 `TP * DP`（含判定为 busy 或 unknown 的卡）时，立�
 探测确认可以绑定 Provider 要求的服务地址时，候选状态为 `available`；存在冲突监听或
 绑定失败时为 `occupied`；网络命名空间不确定、输出无法解释或证据互相矛盾时为 `unknown`。
 
-将候选顺序、探测命令/机制及其原始输出摘要、探测结果和选中的唯一端口写入
-`stages.resources.ports`。没有可用候选时使用 `failure_type=port_unavailable` 或
+将候选顺序、探测命令/机制及其原始输出摘要、探测结果保存在内存中，最终只把选中的唯一端口
+写入 `resources.port`。没有可用候选时使用 `failure_type=port_unavailable` 或
 `port_probe_failed`；不自动换到 Provider 未提供的端口。
 
 端口确认后应立即在同一个 Provider 生命周期边界内启动服务。端口检查不替代外部租约，

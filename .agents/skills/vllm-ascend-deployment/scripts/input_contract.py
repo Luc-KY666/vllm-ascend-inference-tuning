@@ -23,6 +23,10 @@ DEFAULTS = {
     "min_required_context_len": 4096,
     "block_size": 128,
 }
+SERVICE_DEFAULTS = {
+    "backend": "vllm",
+    "endpoint": "/v1/chat/completions",
+}
 RESOURCE_FIELDS = {
     "visible_devices",
     "port_candidates",
@@ -143,6 +147,7 @@ def validate_and_build(
     model = _mapping(payload.get("model"))
     runtime_in = _mapping(payload.get("runtime"))
     resources_in = _mapping(payload.get("resources"))
+    service_in = _mapping(payload.get("service"))
     outputs_in = _mapping(payload.get("outputs"))
     errors: list[str] = []
     warnings: list[str] = []
@@ -164,6 +169,27 @@ def validate_and_build(
         errors.append(f"模型路径不可读: {model_path}")
     if not isinstance(served_name, str) or not served_name.strip():
         errors.append("model.served_model_name 必须是非空字符串")
+
+    backend = service_in.get("backend", SERVICE_DEFAULTS["backend"])
+    endpoint = service_in.get("endpoint", SERVICE_DEFAULTS["endpoint"])
+    if backend is None:
+        backend = SERVICE_DEFAULTS["backend"]
+    if endpoint is None:
+        endpoint = SERVICE_DEFAULTS["endpoint"]
+    tokenizer = service_in.get("tokenizer")
+    if tokenizer is None:
+        tokenizer = model_path_value if isinstance(model_path_value, str) else None
+    if not isinstance(backend, str) or not backend.strip():
+        errors.append("service.backend 必须是非空字符串")
+    if (
+        not isinstance(endpoint, str)
+        or not endpoint.startswith("/")
+        or endpoint.startswith("//")
+        or "://" in endpoint
+    ):
+        errors.append("service.endpoint 必须是以 / 开头的 HTTP 路径")
+    if not isinstance(tokenizer, str) or not tokenizer.strip():
+        errors.append("service.tokenizer 必须是非空字符串")
 
     if config_override is None:
         config_path, config, config_error, config_digest = _config_with_digest(
@@ -284,6 +310,11 @@ def validate_and_build(
             "config": _config_summary(config or {}),
         },
         "runtime": runtime,
+        "service": {
+            "backend": backend if isinstance(backend, str) else None,
+            "endpoint": endpoint if isinstance(endpoint, str) else None,
+            "tokenizer": tokenizer if isinstance(tokenizer, str) else None,
+        },
         "resources": {
             **{
                 key: value
@@ -313,7 +344,14 @@ def validate_and_build(
 def resolve_recommended_tp(
     normalized: Mapping[str, Any], tp: int, source: str
 ) -> dict[str, Any]:
-    """Return a TP-updated normalized object without reading or writing a file."""
+    """Merge a TP recommendation without repeating the input contract.
+
+    The first validation already read the model config and populated the derived
+    constraints.  Re-running ``validate_and_build`` here used to repeat all of
+    that work (and could observe a changed model directory), even though the
+    only new fact is the selected TP.  Keep only cheap checks against the
+    cached normalized object and return a new in-memory object.
+    """
 
     if not _positive_int(tp, "recommended_tp"):
         raise ContractError("recommended_tp 必须是正整数")
@@ -322,20 +360,31 @@ def resolve_recommended_tp(
     deployment = copy.deepcopy(dict(normalized))
     original_status = deployment.get("input_status", "missing_parameters")
     model_obj = _mapping(deployment.get("model"))
-    runtime = deployment.setdefault("runtime", {})
+    runtime = _mapping(deployment.get("runtime"))
+    resources = _mapping(deployment.get("resources"))
+    resources = {
+        key: value for key, value in resources.items() if key in RESOURCE_FIELDS
+    }
+    deployment["resources"] = resources
+    allowed_tp = runtime.get("allowed_tp")
+    if isinstance(allowed_tp, list) and tp not in allowed_tp:
+        raise ContractError("recommended_tp 不在已校验的 allowed_tp 中")
+    dp = runtime.get("dp")
+    if _positive_int(dp, "dp"):
+        required = tp * dp
+        visible = resources.get("visible_devices")
+        if isinstance(visible, list) and required > len(visible):
+            raise ContractError("recommended_tp * dp 超过已校验的可见设备数量")
+        max_tp_dp = resources.get("max_tp_dp")
+        if _positive_int(max_tp_dp, "max_tp_dp") and required > max_tp_dp:
+            raise ContractError("recommended_tp * dp 超过已校验的 max_tp_dp")
+    heads = _head_count(model_obj.get("config", {}))
+    if heads is not None and heads % tp:
+        raise ContractError("recommended_tp 不能整除已缓存的 num_attention_heads")
     runtime["tp"] = tp
-    check = validate_and_build(
-        {
-            "model": model_obj,
-            "runtime": runtime,
-            "resources": deployment.get("resources", {}),
-            "outputs": deployment.get("outputs", {}),
-        },
-        check_unique=False,
-        config_override=model_obj.get("config", {}),
-        config_digest_override=model_obj.get("config_digest"),
-    )
-    deployment = check
+    deployment["runtime"] = runtime
+    if original_status == "missing_parameters":
+        deployment["input_status"] = "pass"
     deployment["resolution"] = {
         "mode": "auto_recommended",
         "recommended_tp": tp,
@@ -370,6 +419,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dtype")
     parser.add_argument("--quantization")
     parser.add_argument("--extra-arg", action="append", dest="extra_args")
+    parser.add_argument("--backend")
+    parser.add_argument("--endpoint")
+    parser.add_argument("--tokenizer")
     parser.add_argument("--card-memory-bytes", type=int)
     parser.add_argument("--device-count", type=int)
     parser.add_argument("--max-tp-dp", type=int)
@@ -422,6 +474,11 @@ def main(argv: list[str] | None = None) -> int:
                     "card_memory_bytes": args.card_memory_bytes,
                     "device_count": args.device_count,
                     "max_tp_dp": args.max_tp_dp,
+                },
+                "service": {
+                    "backend": args.backend,
+                    "endpoint": args.endpoint,
+                    "tokenizer": args.tokenizer,
                 },
                 "outputs": {"attempt_dir": args.attempt_dir},
             }

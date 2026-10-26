@@ -1,4 +1,4 @@
-"""Validate the canonical vLLM-Ascend benchmark report contract."""
+"""Validate the final vllm-ascend benchmark report contract."""
 
 from __future__ import annotations
 
@@ -9,174 +9,330 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = "vllm-ascend-benchmark-report-v2"
-STATUS_VALUES = {"running", "success", "invalid", "blocked", "error"}
+SCHEMA_VERSION = "vllm-ascend-benchmark-report-v3"
+STATUS_VALUES = {"success", "invalid", "blocked", "error"}
 TOP_LEVEL_KEYS = {
     "schema_version",
     "status",
-    "attempt",
-    "preflight",
-    "service",
-    "workload",
-    "counts",
-    "metrics",
-    "goodput",
-    "throughput",
-    "source",
-    "failure",
-    "oom",
-    "cleanup",
-    "timings",
-    "errors",
-}
-REQUIRED_SECTIONS = {
-    "attempt",
-    "preflight",
-    "service",
-    "workload",
-    "counts",
-    "metrics",
-    "goodput",
-    "throughput",
-    "source",
-    "oom",
-    "cleanup",
-    "timings",
-    "errors",
-}
-FORBIDDEN_TOP_LEVEL_KEYS = {
-    "inputs",
     "model",
-    "deployment",
-    "resources",
-    "checks",
-    "service_identity_valid",
-    "benchmark_result",
+    "load",
+    "dataset",
+    "arrival",
+    "parameters",
+    "result",
+    "failure",
+    "errors",
 }
-FORBIDDEN_OUTPUT_MARKERS = {
-    "benchmark_result.json",
+MODEL_KEYS = {"name"}
+LOAD_KEYS = {"mode", "selection", "scenario"}
+DATASET_KEYS = {
+    "mode",
+    "name",
+    "path",
+    "split",
+    "subset",
+    "revision_or_hash",
+    "output_len",
+    "text_column",
+    "skip_chat_template",
+}
+ARRIVAL_KEYS = {
+    "mode",
+    "requested_count",
+    "warmups",
+    "max_concurrency",
+    "request_rate",
+    "burstiness",
+    "rounds",
+}
+PARAMETER_KEYS = {
+    "backend",
+    "tokenizer",
+    "base_url",
+    "endpoint",
+    "seed",
+    "seed_source",
+    "temperature",
+    "temperature_source",
+    "top_p",
+    "stream",
+    "include_usage",
+    "num_prompts",
+    "max_concurrency",
+    "num_warmups",
+    "request_rate",
+    "burstiness",
+    "percentile_metrics",
+    "metric_percentiles",
+    "goodput",
+    "additional",
+}
+RESULT_KEYS = {
+    "requested",
+    "completed",
+    "failed",
+    "ttft_ms",
+    "tpot_ms",
+    "e2el_ms",
+    "requests_per_second",
+    "output_tokens_per_second",
+    "goodput",
+}
+RESULT_REQUIRED_KEYS = RESULT_KEYS - {"goodput"}
+PERCENTILE_KEYS = {"p50", "p95"}
+GOODPUT_KEYS = {"status", "slo_ms", "request_goodput"}
+FAILURE_KEYS = {"stage", "type", "reason"}
+ERROR_FIELDS = {"stage", "type", "message", "recoverable", "resolved"}
+FORBIDDEN_KEYS = {
+    "attempt",
+    "preflight",
+    "service",
+    "workload",
+    "counts",
+    "metrics",
+    "throughput",
+    "source",
+    "oom",
+    "cleanup",
+    "timings",
+    "artifacts",
+    "stages",
+    "environment",
+    "command",
+    "raw_result",
+    "raw_result_sha256",
     "stdout",
     "stderr",
-    "command_transcript",
     "server_log",
 }
 
 
-def _require_mapping(report: Mapping[str, Any], key: str, errors: list[str]) -> Mapping[str, Any]:
-    value = report.get(key)
+def _require_mapping(value: Any, label: str, errors: list[str]) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
-        errors.append(f"{key} must be an object")
+        errors.append(f"{label} must be an object")
         return {}
     return value
 
 
-def _walk(value: Any, path: str = ""):
+def _check_exact_keys(value: Mapping[str, Any], expected: set[str], label: str, errors: list[str]) -> None:
+    unknown = set(value) - expected
+    missing = expected - set(value)
+    if unknown:
+        errors.append(f"{label} has unknown fields: {', '.join(sorted(unknown))}")
+    if missing:
+        errors.append(f"{label} is missing fields: {', '.join(sorted(missing))}")
+
+
+def _find_forbidden_keys(value: Any, prefix: str = "") -> list[str]:
+    found: list[str] = []
     if isinstance(value, Mapping):
         for key, child in value.items():
-            child_path = f"{path}.{key}" if path else str(key)
-            yield child_path, str(key), child
-            yield from _walk(child, child_path)
+            path = f"{prefix}.{key}" if prefix else str(key)
+            if str(key) in FORBIDDEN_KEYS:
+                found.append(path)
+            found.extend(_find_forbidden_keys(child, path))
     elif isinstance(value, list):
         for index, child in enumerate(value):
-            child_path = f"{path}[{index}]"
-            if isinstance(child, (Mapping, list)):
-                yield from _walk(child, child_path)
-            else:
-                yield child_path, "", child
+            found.extend(_find_forbidden_keys(child, f"{prefix}[{index}]"))
+    return found
 
 
-def _path_value(value: Any, label: str, errors: list[str]) -> str | None:
+def _optional_string(value: Any, label: str, errors: list[str]) -> None:
+    if value is not None and (not isinstance(value, str) or not value):
+        errors.append(f"{label} must be a non-empty string or null")
+
+
+def _errors(report: Mapping[str, Any], errors: list[str]) -> None:
+    value = report.get("errors")
+    if not isinstance(value, list):
+        errors.append("errors must be an array")
+        return
+    for index, item in enumerate(value):
+        if not isinstance(item, Mapping):
+            errors.append(f"errors[{index}] must be an object")
+            continue
+        missing = ERROR_FIELDS - set(item)
+        unknown = set(item) - ERROR_FIELDS - {"repair_action"}
+        if missing:
+            errors.append(f"errors[{index}] is missing fields: {', '.join(sorted(missing))}")
+        if unknown:
+            errors.append(f"errors[{index}] has unknown fields: {', '.join(sorted(unknown))}")
+        for field in ("stage", "type", "message"):
+            if not isinstance(item.get(field), str) or not item.get(field):
+                errors.append(f"errors[{index}].{field} must be a non-empty string")
+        for field in ("recoverable", "resolved"):
+            if not isinstance(item.get(field), bool):
+                errors.append(f"errors[{index}].{field} must be boolean")
+        if "repair_action" in item and item["repair_action"] is not None and not isinstance(item["repair_action"], str):
+            errors.append(f"errors[{index}].repair_action must be a string or null")
+
+
+def _failure(report: Mapping[str, Any], errors: list[str]) -> None:
+    value = report.get("failure")
     if value is None:
-        return None
-    if not isinstance(value, str) or not value:
-        errors.append(f"{label} must be a non-empty path or null")
-        return None
-    return value
+        return
+    failure = _require_mapping(value, "failure", errors)
+    _check_exact_keys(failure, FAILURE_KEYS, "failure", errors)
+    for field in FAILURE_KEYS:
+        if not isinstance(failure.get(field), str) or not failure.get(field):
+            errors.append(f"failure.{field} must be a non-empty string")
+
+
+def _percentiles(value: Any, label: str, errors: list[str]) -> None:
+    metrics = _require_mapping(value, label, errors)
+    _check_exact_keys(metrics, PERCENTILE_KEYS, label, errors)
+    for field in PERCENTILE_KEYS:
+        metric = metrics.get(field)
+        if metric is not None and (not isinstance(metric, (int, float)) or isinstance(metric, bool)):
+            errors.append(f"{label}.{field} must be a number or null")
 
 
 def validate_report(report: Mapping[str, Any]) -> list[str]:
-    """Return contract violations; an empty list means the report is canonical."""
-
+    """Return final-report contract violations; an empty list means valid."""
     errors: list[str] = []
     if report.get("schema_version") != SCHEMA_VERSION:
         errors.append(f"schema_version must be {SCHEMA_VERSION}")
     if report.get("status") not in STATUS_VALUES:
-        errors.append("status must be running, success, invalid, blocked, or error")
+        errors.append("status must be success, invalid, blocked, or error")
+    _check_exact_keys(report, TOP_LEVEL_KEYS, "report", errors)
+    errors.extend(f"intermediate field is forbidden: {path}" for path in _find_forbidden_keys(report))
 
-    unknown = set(report) - TOP_LEVEL_KEYS
-    if unknown:
-        errors.append("unknown top-level fields: " + ", ".join(sorted(unknown)))
-    missing = REQUIRED_SECTIONS - set(report)
-    if missing:
-        errors.append("missing top-level sections: " + ", ".join(sorted(missing)))
-    old = sorted(set(report) & FORBIDDEN_TOP_LEVEL_KEYS)
-    if old:
-        errors.append("legacy top-level fields are forbidden: " + ", ".join(old))
+    model = _require_mapping(report.get("model"), "model", errors)
+    _check_exact_keys(model, MODEL_KEYS, "model", errors)
+    _optional_string(model.get("name"), "model.name", errors)
 
-    for key in REQUIRED_SECTIONS:
-        _require_mapping(report, key, errors) if key != "errors" else None
-    if not isinstance(report.get("errors"), list):
-        errors.append("errors must be an array")
+    load = _require_mapping(report.get("load"), "load", errors)
+    _check_exact_keys(load, LOAD_KEYS, "load", errors)
+    _optional_string(load.get("mode"), "load.mode", errors)
+    _optional_string(load.get("selection"), "load.selection", errors)
+    _optional_string(load.get("scenario"), "load.scenario", errors)
 
-    preflight = _require_mapping(report, "preflight", errors)
-    environment_probe = _path_value(
-        preflight.get("environment_probe"), "preflight.environment_probe", errors
-    )
-    deployment_report = _path_value(
-        preflight.get("deployment_report"), "preflight.deployment_report", errors
-    )
+    dataset = _require_mapping(report.get("dataset"), "dataset", errors)
+    _check_exact_keys(dataset, DATASET_KEYS, "dataset", errors)
+    for field in ("mode", "name", "path", "split", "subset", "revision_or_hash", "text_column"):
+        _optional_string(dataset.get(field), f"dataset.{field}", errors)
+    for field in ("output_len",):
+        value = dataset.get(field)
+        if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value < 0):
+            errors.append(f"dataset.{field} must be a non-negative integer or null")
+    skip_chat_template = dataset.get("skip_chat_template")
+    if skip_chat_template is not None and not isinstance(skip_chat_template, bool):
+        errors.append("dataset.skip_chat_template must be boolean or null")
 
-    source = _require_mapping(report, "source", errors)
-    raw_result = _path_value(source.get("raw_result"), "source.raw_result", errors)
-    if raw_result is not None and Path(raw_result).name != "raw_benchmark_result.json":
-        errors.append("source.raw_result must point to raw_benchmark_result.json")
-    raw_digest = source.get("raw_result_sha256")
-    if raw_result is None:
-        if raw_digest is not None:
-            errors.append("source.raw_result_sha256 must be null when raw_result is null")
-    elif (
-        not isinstance(raw_digest, str)
-        or len(raw_digest) != 64
-        or any(character not in "0123456789abcdefABCDEF" for character in raw_digest)
+    arrival = _require_mapping(report.get("arrival"), "arrival", errors)
+    _check_exact_keys(arrival, ARRIVAL_KEYS, "arrival", errors)
+    _optional_string(arrival.get("mode"), "arrival.mode", errors)
+    for field in ("requested_count", "warmups", "max_concurrency", "rounds"):
+        value = arrival.get(field)
+        if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value < 0):
+            errors.append(f"arrival.{field} must be a non-negative integer or null")
+    for field in ("request_rate", "burstiness"):
+        value = arrival.get(field)
+        if value is not None and (not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0):
+            errors.append(f"arrival.{field} must be a non-negative number or null")
+
+    parameters = _require_mapping(report.get("parameters"), "parameters", errors)
+    _check_exact_keys(parameters, PARAMETER_KEYS, "parameters", errors)
+    for field in ("backend", "tokenizer", "base_url", "seed_source", "temperature_source"):
+        _optional_string(parameters.get(field), f"parameters.{field}", errors)
+    endpoint = parameters.get("endpoint")
+    if endpoint is not None and (
+        not isinstance(endpoint, str) or not endpoint.startswith("/") or endpoint.startswith("//") or "://" in endpoint
     ):
-        errors.append("source.raw_result_sha256 must be a 64-character hexadecimal digest")
+        errors.append("parameters.endpoint must be an HTTP path or null")
+    for field in ("seed", "num_prompts", "max_concurrency", "num_warmups"):
+        value = parameters.get(field)
+        if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value < 0):
+            errors.append(f"parameters.{field} must be a non-negative integer or null")
+    for field in ("temperature", "request_rate", "burstiness"):
+        value = parameters.get(field)
+        if value is not None and (
+            not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0
+        ):
+            errors.append(f"parameters.{field} must be a non-negative number or null")
+    top_p = parameters.get("top_p")
+    if top_p is not None and (
+        not isinstance(top_p, (int, float)) or isinstance(top_p, bool) or not 0 <= top_p <= 1
+    ):
+        errors.append("parameters.top_p must be a number in [0, 1] or null")
+    for field in ("stream", "include_usage"):
+        value = parameters.get(field)
+        if value is not None and not isinstance(value, bool):
+            errors.append(f"parameters.{field} must be boolean or null")
+    percentile_metrics = parameters.get("percentile_metrics")
+    if not isinstance(percentile_metrics, list) or any(
+        not isinstance(value, str) or not value for value in percentile_metrics
+    ):
+        errors.append("parameters.percentile_metrics must be a string array")
+    metric_percentiles = parameters.get("metric_percentiles")
+    if not isinstance(metric_percentiles, list) or any(
+        not isinstance(value, (int, float)) or isinstance(value, bool) or not 0 <= value <= 100
+        for value in metric_percentiles
+    ):
+        errors.append("parameters.metric_percentiles must be a number array in [0, 100]")
+    parameter_goodput = parameters.get("goodput")
+    if parameter_goodput is not None:
+        if not isinstance(parameter_goodput, Mapping) or not parameter_goodput:
+            errors.append("parameters.goodput must be a non-empty object or null")
+        elif any(
+            not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0
+            for value in parameter_goodput.values()
+        ):
+            errors.append("parameters.goodput values must be non-negative numbers")
+    if not isinstance(parameters.get("additional"), Mapping):
+        errors.append("parameters.additional must be an object")
 
-    paths = [
-        ("preflight.environment_probe", environment_probe),
-        ("preflight.deployment_report", deployment_report),
-        ("source.raw_result", raw_result),
-    ]
-    seen: dict[str, str] = {}
-    for owner, path in paths:
-        if path is None:
-            continue
-        previous = seen.setdefault(path, owner)
-        if previous != owner:
-            errors.append(f"artifact path is duplicated: {path} ({previous}, {owner})")
+    result = _require_mapping(report.get("result"), "result", errors)
+    unknown_result = set(result) - RESULT_KEYS
+    missing_result = RESULT_REQUIRED_KEYS - set(result)
+    if unknown_result:
+        errors.append(f"result has unknown fields: {', '.join(sorted(unknown_result))}")
+    if missing_result:
+        errors.append(f"result is missing fields: {', '.join(sorted(missing_result))}")
+    for field in ("requested", "completed", "failed"):
+        value = result.get(field)
+        if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value < 0):
+            errors.append(f"result.{field} must be a non-negative integer or null")
+    for field in ("ttft_ms", "tpot_ms", "e2el_ms"):
+        _percentiles(result.get(field), f"result.{field}", errors)
+    for field in ("requests_per_second", "output_tokens_per_second"):
+        value = result.get(field)
+        if value is not None and (not isinstance(value, (int, float)) or isinstance(value, bool)):
+            errors.append(f"result.{field} must be a number or null")
+    if "goodput" in result:
+        goodput = _require_mapping(result.get("goodput"), "result.goodput", errors)
+        _check_exact_keys(goodput, GOODPUT_KEYS, "result.goodput", errors)
+        status = goodput.get("status")
+        if status not in {"reported", "missing"}:
+            errors.append("result.goodput.status must be reported or missing")
+        slo = goodput.get("slo_ms")
+        if not isinstance(slo, Mapping):
+            errors.append("result.goodput.slo_ms must be an object")
+        elif not slo:
+            errors.append("result.goodput.slo_ms must be non-empty when goodput is present")
+        elif any(
+            not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0
+            for value in slo.values()
+        ):
+            errors.append("result.goodput.slo_ms values must be non-negative numbers")
+        request_goodput = goodput.get("request_goodput")
+        if request_goodput is not None and (
+            not isinstance(request_goodput, (int, float)) or isinstance(request_goodput, bool)
+        ):
+            errors.append("result.goodput.request_goodput must be a number or null")
+        if status == "reported" and request_goodput is None:
+            errors.append("reported goodput must include request_goodput")
+        if status == "missing" and report.get("status") == "success":
+            errors.append("success reports cannot use missing goodput")
+        if parameter_goodput is None:
+            errors.append("result.goodput requires parameters.goodput")
 
-    failure = report.get("failure")
-    if failure is not None:
-        if not isinstance(failure, Mapping):
-            errors.append("failure must be an object or null")
-        else:
-            refs = failure.get("artifacts", [])
-            if isinstance(refs, str):
-                refs = [refs]
-            if not isinstance(refs, list) or any(
-                not isinstance(ref, str) or not ref or "/" in ref or "\\" in ref
-                for ref in refs
-            ):
-                errors.append("failure.artifacts must be an array of logical references")
-
-    for path, key, value in _walk(report):
-        lowered_key = key.lower()
-        lowered_value = value.lower() if isinstance(value, str) else ""
-        if lowered_key in FORBIDDEN_OUTPUT_MARKERS:
-            errors.append(f"large output field is forbidden: {path}")
-        value_for_scan = lowered_value.replace("raw_benchmark_result.json", "")
-        if any(marker in value_for_scan for marker in FORBIDDEN_OUTPUT_MARKERS):
-            errors.append(f"forbidden output marker in report: {path}")
-
+    _failure(report, errors)
+    if report.get("status") == "success" and report.get("failure") is not None:
+        errors.append("success reports must set failure to null")
+    if report.get("status") != "success" and report.get("failure") is None:
+        errors.append("non-success reports must provide failure")
+    _errors(report, errors)
     return errors
 
 
@@ -192,10 +348,10 @@ def main(argv: list[str] | None = None) -> int:
     if not isinstance(value, Mapping):
         print("report must be a JSON object")
         return 2
-    errors = validate_report(value)
-    if errors:
-        for error in errors:
-            print(error)
+    violations = validate_report(value)
+    if violations:
+        for violation in violations:
+            print(violation)
         return 1
     print("benchmark report valid")
     return 0

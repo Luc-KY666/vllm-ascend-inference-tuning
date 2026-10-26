@@ -17,7 +17,7 @@ SPEC.loader.exec_module(report_io)
 
 
 class ReportIoTests(unittest.TestCase):
-    def test_atomic_write_report_writes_parseable_checkpoint(self) -> None:
+    def test_atomic_write_report_writes_parseable_report(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "deployment_report.json"
             report_io.atomic_write_report(target, {"status": "running"})

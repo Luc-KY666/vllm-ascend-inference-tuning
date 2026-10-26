@@ -47,6 +47,9 @@ class InputContractTests(unittest.TestCase):
         self.assertEqual(result["runtime"]["max_num_batched_tokens"], 4096)
         self.assertEqual(result["runtime"]["allowed_tp"], [1, 2])
         self.assertEqual(result["model"]["config"], {"hidden_size": 16, "num_attention_heads": 8})
+        self.assertEqual(result["service"]["backend"], "vllm")
+        self.assertEqual(result["service"]["endpoint"], "/v1/chat/completions")
+        self.assertEqual(result["service"]["tokenizer"], result["model"]["model_path"])
 
     def test_invalid_model_path_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -112,13 +115,43 @@ class InputContractTests(unittest.TestCase):
                 input_contract.resolve_recommended_tp(normalized, 2, "static_oom")
         self.assertEqual(read_bytes.call_count, 1)
 
-    def test_recommended_tp_is_revalidated(self) -> None:
+    def test_recommended_tp_uses_cached_constraints_without_full_revalidation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             deployment = input_contract.validate_and_build(self.payload(root))
-            result = input_contract.resolve_recommended_tp(deployment, 3, "static_oom")
+            with self.assertRaises(input_contract.ContractError):
+                input_contract.resolve_recommended_tp(deployment, 3, "static_oom")
+
+    def test_service_endpoint_must_be_a_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            payload = self.payload(Path(directory))
+            payload["service"] = {"endpoint": "http://127.0.0.1:8117/v1/chat/completions"}
+            result = input_contract.validate_and_build(payload)
         self.assertEqual(result["input_status"], "invalid")
-        self.assertTrue(result["diagnostics"]["errors"])
+        self.assertTrue(any("service.endpoint" in error for error in result["diagnostics"]["errors"]))
+
+    def test_cli_accepts_service_interface_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            model = root / "model"
+            model.mkdir()
+            (model / "config.json").write_text(
+                json.dumps({"num_attention_heads": 8}), encoding="utf-8"
+            )
+            output = io.StringIO()
+            with redirect_stdout(output):
+                code = input_contract.main(
+                    [
+                        "--model-path", str(model), "--served-model-name", "field-model",
+                        "--visible-devices", "0", "1", "--port-candidates", "18117",
+                        "--attempt-dir", str(root / "attempt"), "--backend", "vllm",
+                        "--endpoint", "/v1/chat/completions", "--tokenizer", str(model),
+                    ]
+                )
+            result = json.loads(output.getvalue())
+        self.assertEqual(code, 0)
+        self.assertEqual(result["service"]["endpoint"], "/v1/chat/completions")
+        self.assertEqual(result["service"]["tokenizer"], str(model))
 
     def test_tp_resolution_reuses_existing_static_report_without_rechecking_oom(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

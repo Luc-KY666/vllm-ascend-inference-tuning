@@ -1,116 +1,82 @@
 {
-  "schema_version": "vllm-ascend-benchmark-report-v2",
-  "status": "running",
-  "attempt": {
-    "id": null,
-    "provider": null,
-    "config_digest": null,
-    "workload_digest": null,
-    "started_at": null,
-    "updated_at": null
+  "schema_version": "vllm-ascend-benchmark-report-v3",
+  "status": "success",
+  "model": {
+    "name": null
   },
-  "preflight": {
-    "status": "not_run",
-    "provider_path": null,
-    "execution_context": "unknown",
-    "environment_probe": null,
-    "deployment_report": null
-  },
-  "service": {
-    "source": null,
-    "base_url": null,
-    "endpoint": null,
-    "served_model_name": null,
-    "tokenizer": null,
-    "service_identity_valid": false
-  },
-  "workload": {
+  "load": {
+    "mode": null,
     "selection": null,
-    "scenario": null,
-    "benchmark_mode": null,
-    "dataset": {
-      "source": null,
-      "mode": null,
-      "name": null,
-      "path": null,
-      "split": null,
-      "subset": null,
-      "revision_or_hash": null,
-      "output_len": null,
-      "text_column": null,
-      "skip_chat_template": null,
-      "validation": {
-        "split_verified": false,
-        "validation_sample_count": 0,
-        "sample_indices": [],
-        "full_count_attempted": false,
-        "errors": []
-      },
-      "resolution": null
-    },
+    "scenario": null
+  },
+  "dataset": {
+    "mode": null,
+    "name": null,
+    "path": null,
+    "split": null,
+    "subset": null,
+    "revision_or_hash": null,
+    "output_len": null,
+    "text_column": null,
+    "skip_chat_template": null
+  },
+  "arrival": {
+    "mode": null,
     "requested_count": null,
     "warmups": null,
     "max_concurrency": null,
     "request_rate": null,
     "burstiness": null,
-    "rounds": null,
-    "generation": {
-      "temperature": null,
-      "temperature_source": null,
-      "top_p": null,
-      "stream": null,
-      "include_usage": null
-    },
-    "resolution": {
-      "defaulted_fields": []
-    },
-    "statistics": {
-      "percentiles": [50, 95]
-    }
+    "rounds": null
   },
-  "counts": {
+  "parameters": {
+    "backend": null,
+    "tokenizer": null,
+    "base_url": null,
+    "endpoint": null,
+    "seed": null,
+    "seed_source": null,
+    "temperature": null,
+    "temperature_source": null,
+    "top_p": null,
+    "stream": null,
+    "include_usage": null,
+    "num_prompts": null,
+    "max_concurrency": null,
+    "num_warmups": null,
+    "request_rate": null,
+    "burstiness": null,
+    "percentile_metrics": [
+      "ttft",
+      "tpot",
+      "e2el"
+    ],
+    "metric_percentiles": [
+      50,
+      95
+    ],
+    "goodput": null,
+    "additional": {}
+  },
+  "result": {
     "requested": null,
     "completed": null,
-    "failed": null
-  },
-  "metrics": {
-    "source": "vllm_bench_serve",
-    "TTFT": {"unit": "ms", "P50": null, "P95": null},
-    "TPOT": {"unit": "ms", "P50": null, "P95": null},
-    "E2EL": {"unit": "ms", "P50": null, "P95": null}
-  },
-  "goodput": {
-    "status": "not_requested",
-    "constraints_ms": {},
-    "request_goodput": null,
-    "unit": "req/s"
-  },
-  "throughput": {
-    "window_seconds": null,
+    "failed": null,
+    "ttft_ms": {
+      "p50": null,
+      "p95": null
+    },
+    "tpot_ms": {
+      "p50": null,
+      "p95": null
+    },
+    "e2el_ms": {
+      "p50": null,
+      "p95": null
+    },
     "requests_per_second": null,
     "output_tokens_per_second": null
   },
-  "source": {
-    "format": "vllm_bench_serve",
-    "command": null,
-    "raw_result": null,
-    "raw_result_sha256": null,
-    "vllm_version": null,
-    "vllm_ascend_version": null,
-    "cli_capabilities": {}
-  },
   "failure": null,
-  "oom": {
-    "detected": false,
-    "phase": "none",
-    "type": null,
-    "evidence": []
-  },
-  "cleanup": {
-    "status": "not_run",
-    "owner": null,
-    "errors": []
-  },
-  "timings": {},
   "errors": []
 }

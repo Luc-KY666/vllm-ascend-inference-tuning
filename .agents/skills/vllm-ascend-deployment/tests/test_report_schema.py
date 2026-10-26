@@ -23,75 +23,60 @@ def canonical_report() -> dict:
 
 
 class ReportSchemaTests(unittest.TestCase):
-    def test_template_has_all_required_sections(self) -> None:
+    def test_template_is_final_report_shape(self) -> None:
         report = canonical_report()
         self.assertEqual(report_schema.validate_report(report), [])
-        self.assertEqual(set(report["stages"]), report_schema.STAGE_KEYS)
-        self.assertEqual(set(report["artifacts"]["probe"]), set(report_schema.PROBE_ARTIFACTS))
+        self.assertEqual(report["schema_version"], report_schema.SCHEMA_VERSION)
+        self.assertNotIn("timings", report)
+        self.assertNotIn("stages", report)
+        self.assertEqual(set(report["launch"]), {"tp", "dp", "mns", "mnbt", "parameters"})
 
-    def test_environment_paths_are_rejected(self) -> None:
+    def test_failure_and_error_contract(self) -> None:
         report = canonical_report()
-        report["environment"]["probe_path"] = "/attempt/environment_probe.json"
-        errors = report_schema.validate_report(report)
-        self.assertTrue(any("environment.probe_path" in error for error in errors))
-
-    def test_environment_path_like_fields_are_rejected(self) -> None:
-        report = canonical_report()
-        report["environment"]["diagnostic_path"] = "/attempt/environment_probe.json"
-        errors = report_schema.validate_report(report)
-        self.assertTrue(any("environment.diagnostic_path" in error for error in errors))
-
-    def test_probe_paths_have_one_canonical_owner(self) -> None:
-        report = canonical_report()
-        report["artifacts"]["probe"]["environment_probe"] = "/attempt/environment_probe.json"
-        report["artifacts"]["probe"]["sandbox_detection"] = "/attempt/sandbox-detection.json"
-        self.assertEqual(report_schema.validate_report(report), [])
-        paths = report_schema.artifact_path_index(report)
-        self.assertEqual(paths["/attempt/environment_probe.json"], ["artifacts.probe.environment_probe"])
-        self.assertEqual(paths["/attempt/sandbox-detection.json"], ["artifacts.probe.sandbox_detection"])
-
-    def test_duplicate_artifact_paths_are_rejected(self) -> None:
-        report = canonical_report()
-        report["artifacts"]["probe"]["sandbox_detection"] = "/attempt/same"
-        report["artifacts"]["raw_logs"]["server_log"] = "/attempt/same"
-        errors = report_schema.validate_report(report)
-        self.assertTrue(any("artifact 路径重复" in error for error in errors))
-
-    def test_probe_path_cannot_be_duplicated_in_provider_payload(self) -> None:
-        report = canonical_report()
-        report["artifacts"]["probe"]["environment_probe"] = "/attempt/environment_probe.json"
-        report["input"]["provider_payload"] = {"environment_probe": "/attempt/environment_probe.json"}
-        errors = report_schema.validate_report(report)
-        self.assertTrue(any("artifact 路径重复" in error for error in errors))
-        self.assertTrue(any("input 不得保存" in error for error in errors))
-
-    def test_log_metadata_is_not_mistaken_for_a_second_path(self) -> None:
-        report = canonical_report()
-        report["artifacts"]["raw_logs"]["server_log"] = {
-            "path": "/attempt/server.log",
-            "sha256": "same-digest",
+        report["status"] = "failed"
+        report["failure"] = {
+            "stage": "service",
+            "type": "startup_timeout",
+            "reason": "service did not become ready",
         }
-        report["artifacts"]["raw_logs"]["command_transcript"] = {
-            "path": "/attempt/command.txt",
-            "sha256": "same-digest",
+        report["errors"].append(
+            {
+                "stage": "service",
+                "type": "startup_timeout",
+                "message": "service did not become ready",
+                "recoverable": False,
+                "resolved": False,
+            }
+        )
+        self.assertEqual(report_schema.validate_report(report), [])
+
+    def test_old_intermediate_sections_are_rejected(self) -> None:
+        report = canonical_report()
+        report["timings"] = {}
+        errors = report_schema.validate_report(report)
+        self.assertTrue(any("timings" in error for error in errors))
+
+    def test_invalid_service_endpoint_is_rejected(self) -> None:
+        report = canonical_report()
+        report["service"]["endpoint"] = "http://127.0.0.1:8117/v1/chat/completions"
+        errors = report_schema.validate_report(report)
+        self.assertTrue(any("service.endpoint" in error for error in errors))
+
+    def test_launch_parameters_and_resources_are_checked(self) -> None:
+        report = canonical_report()
+        report["resources"] = {"npu": [0, 1], "port": 8117}
+        report["launch"].update({"tp": 2, "dp": 1, "mns": 32, "mnbt": 4096})
+        report["launch"]["parameters"] = {
+            "tensor_parallel_size": 2,
+            "data_parallel_size": 1,
+            "max_num_seqs": 32,
+            "max_num_batched_tokens": 4096,
         }
         self.assertEqual(report_schema.validate_report(report), [])
+        report["resources"]["port"] = 0
+        self.assertTrue(any("resources.port" in error for error in report_schema.validate_report(report)))
 
-    def test_old_aliases_and_intermediate_paths_are_rejected(self) -> None:
-        report = canonical_report()
-        report["inputs"] = {"environment_probe": "/attempt/environment_probe.json"}
-        report["stages"]["static_oom"]["result"] = {"path": "static-oom-report.json"}
-        errors = report_schema.validate_report(report)
-        self.assertTrue(any("旧字段" in error for error in errors))
-        self.assertTrue(any("static-oom-report.json" in error for error in errors))
-
-    def test_failure_uses_logical_artifact_references(self) -> None:
-        report = canonical_report()
-        report["failure"] = {"artifacts": ["/attempt/server.log"]}
-        errors = report_schema.validate_report(report)
-        self.assertTrue(any("逻辑引用" in error for error in errors))
-
-    def test_report_has_no_mutation_from_validation(self) -> None:
+    def test_validation_does_not_mutate_report(self) -> None:
         report = canonical_report()
         before = copy.deepcopy(report)
         report_schema.validate_report(report)

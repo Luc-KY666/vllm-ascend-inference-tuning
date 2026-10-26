@@ -174,6 +174,7 @@ Provider 必须冻结以下字段：
     "rounds": "<positive integer>"
   },
   "generation": {
+    "seed": "<non-negative integer>",
     "temperature": "<显式值 | null(不传参) | 未提供时默认 0>",
     "top_p": "<contract value>",
     "stream": "<contract value>",
@@ -188,15 +189,20 @@ Provider 必须冻结以下字段：
 }
 ```
 
+最终报告将 `requests` 中的请求数、warmup、最大并发、到达率、burstiness 和轮次镜像到
+`arrival`，以便不读取 raw result 也能复现本次压测的请求到达合同。缺失或矛盾的
+到达字段仍属于 `invalid`，不能用宿主默认值补齐。
+
 goodput 约束只记录 Provider 实际提供的字段。合同不完整、数据集未解析完成、模式关系
 错误或 CLI 不支持所需适配器参数时，不进入正式 benchmark，并在最终报告中使用
 `invalid` 或 `blocked`。`temperature=null` 表示命令不传 `--temperature`，由服务端决定默认值；
 不得把它解释成 `0`。
 
-Provider 未显式冻结以下可选字段时使用默认值，并在
-`benchmark_report.json.workload.resolution.defaulted_fields` 中记录；实际 temperature 和来源
-写入 `benchmark_report.json.workload.generation`：
+Provider 未显式冻结以下可选字段时使用默认值，并在内存中的 workload context 记录；实际传给
+CLI 的 seed、temperature 和来源，以及其他 generation 配置写入最终
+`benchmark_report.json.parameters`：
 
+- `seed=42`：显式传入 `--seed 42`，保证请求生成可复现；
 - `temperature=0`：显式传入 `--temperature 0`，贪心且可重复；
 - `num_warmups=10`：warmup 请求不计入正式请求统计；
 - `burstiness=1.0`；
