@@ -1,5 +1,5 @@
 ---
-name: inference-profile-analyze
+name: vllm-ascend-profile-analyze
 description: >-
   分析已采集的昇腾 NPU 推理 profile（torch_npu.profiler / msprof 产出的 ASCEND_PROFILER_OUTPUT 目录），
   定位推理性能瓶颈。从 step_trace_time 定性瓶颈类型（compute-bound / comm-bound / free-bound），
