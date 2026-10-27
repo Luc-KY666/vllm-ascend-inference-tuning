@@ -1,5 +1,11 @@
 # 静态 OOM 与最小 TP 预检
 
+## PD 模式
+
+PD 模式调用 `scripts/pd_static_oom_precheck.py` 一次，分别检查 Prefill 和 Decode。
+两侧都通过时整体检查通过；任一侧拒绝或无法判断时停止部署。未指定角色 TP 时，
+在该角色设备池的可行候选中选择最小 TP；不能把 P/D 的卡数或 TP 相加替代角色级检查。
+
 静态预检是容量诊断，每个 deployment attempt 只执行一次。它不启动服务、不绑定端口、
 不重新读取模型目录或中间 JSON。agent 将规范化输入和硬件事实在内存中组成 payload，脚本
 只从 stdin 或显式 `--input` 文件读取，并把结果打印到 stdout：

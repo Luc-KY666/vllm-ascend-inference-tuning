@@ -55,3 +55,23 @@ python <skill-root>/scripts/input_contract.py \
 输入契约或读取 `config.json`。调用方将前后对象和 `static_oom_reused=true`、
 `recheck_performed=false` 保存在内存上下文中，复用原有 OOM 结果；最终报告只写入解析后的
 `launch.tp`。
+
+## PD 模式扩展
+
+当 `deployment.mode=single_node_pd` 时，调用 `scripts/pd_input_contract.py`，输入在
+普通 Provider 字段之外增加 P/D 设备池和端口：
+
+```json
+{
+  "deployment": {"mode": "single_node_pd", "connector": "MooncakeConnectorV1"},
+  "pd": {
+    "prefill": {"devices": [0, 1], "api_port": 18080, "kv_port": 30000},
+    "decode": {"devices": [2, 3], "api_port": 18081, "kv_port": 30200},
+    "proxy": {"port": 18000}
+  }
+}
+```
+
+P/D 设备池必须互不重叠且属于 `resources.visible_devices`；API、KV、Proxy 和池化
+控制端口必须唯一。未指定角色 TP 时，由 PD 静态 OOM 阶段在该角色设备池中选择
+最小可行 TP，再按设备池顺序选择对应设备。

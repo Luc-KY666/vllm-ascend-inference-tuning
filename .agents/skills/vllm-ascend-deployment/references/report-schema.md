@@ -39,3 +39,10 @@
 报告对象在内存中组装，清理 `.work/` 后通过 `scripts/report_io.py` 的
 `atomic_write_report` 写出一次。写出完成后只调用一次 `scripts/report_schema.py`；中间阶段不
 写报告、不运行 schema 校验，校验失败不重跑 attempt。
+
+## PD 模式
+
+PD 仍使用本文件定义的 v3 最终报告，不恢复旧版阶段报告结构。`service.base_url` 指向
+Proxy；`resources.npu` 保存实际使用的设备；P/D、Proxy 和 Mooncake 的展开命令、角色
+端口及链路结果放入 `launch.parameters`。普通模式的 `launch.tp`/`launch.dp` 保持不变；
+PD 的角色级 TP/DP 使用 `launch.parameters` 中的角色字段记录。
