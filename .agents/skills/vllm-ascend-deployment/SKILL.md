@@ -1,12 +1,23 @@
 ---
 name: vllm-ascend-deployment
-description: 在外部 Provider 冻结的模型、设备、端口和输出合同内，完成 vLLM-Ascend 环境预检、静态 OOM 检查、服务启动、健康验收和部署报告。
+description: 在外部 Provider 冻结的模型、设备、端口和输出合同内，完成 vLLM-Ascend 环境预检、静态 OOM 检查、普通或者PD分离服务启动、健康验收和部署报告。
 ---
 
 # vLLM-Ascend 部署技能
 
 本 skill 负责一次独立 deployment attempt。Provider 提供模型、可见 NPU、端口候选、运行
 参数和 attempt 目录；本 skill 不下载模型、不扫描未授权资源、不负责搜索调度或性能评估。
+本 skill 不得自行创建新的 attempt；需要新的 attempt 时只能由外部调用方重新发起。
+
+## 部署模式
+
+- 未指定 PD、Prefill/Decode、KV Transfer 或 Mooncake：使用 `ordinary`，启动一个
+  `vllm serve`。
+- 指定 `deployment.mode=single_node_pd` 或明确要求 PD 分离：使用 `single_node_pd`，
+  启动 Prefill、Decode、Proxy；池化 `MultiConnector` 额外启动 Mooncake Master。
+
+普通模式保持现有 v3 报告合同；PD 模式最终公共服务仍写入 v3 的 `service.base_url`，
+指向 Proxy，P/D 角色命令和实例信息写入 `launch.parameters`。
 
 ## 最终报告和临时数据
 
@@ -51,6 +62,8 @@ Provider 至少提供：
   `runtime.max_num_batched_tokens`；缺少 TP 时进入最小 TP 推荐；
 - 可选 `service.backend`、`service.endpoint` 和 `service.tokenizer`；缺省时分别为
   `vllm`、`/v1/chat/completions` 和模型路径；
+- PD 模式额外提供 `deployment.mode`、`deployment.connector` 以及 `pd.prefill`、
+  `pd.decode`、`pd.proxy` 配置，字段见 [`references/pd-deployment.md`](references/pd-deployment.md)；
 - `outputs.attempt_dir`，且必须是本次 attempt 的绝对路径；agent 生成的临时脚本统一归档到
   该目录下的 `scripts/` 子目录。
 
@@ -63,22 +76,29 @@ Provider 至少提供：
    生成唯一的环境、sandbox、`vllm serve --help` 和 `vllm bench serve --help` 外置文件；
    只在内存中保留继续执行所需的摘要。probe 失败时记录失败阶段和错误，清理后走统一的最终
    报告写出路径。
-2. **输入校验。** 调用 `scripts/input_contract.py` 一次，规范化结果只保存在内存；必要时把
+2. **输入校验。** ordinary 调用 `scripts/input_contract.py`；PD 调用
+   `scripts/pd_input_contract.py`。规范化结果只保存在内存；必要时把
    原始 stdout 临时写入 `.work/`。读取 `config.json` 的原始字节只进行一次，同时完成解析
    和 SHA256。缺少 TP 时保留规范化对象，交给静态 OOM 推荐。
-3. **静态 OOM。** 从内存中的规范对象、配置摘要和资源事实组成 payload，通过 stdin 调用
-   `scripts/static_oom_precheck.py`。输入/输出如需落盘只能写入 `.work/static_oom/`，不得写
-   报告。每个 attempt 只执行一次。
+3. **静态 OOM。** ordinary 调用 `scripts/static_oom_precheck.py`；PD 调用
+   `scripts/pd_static_oom_precheck.py`，分别检查 Prefill 和 Decode。两侧都通过才继续；
+   未指定角色 TP 时，在各自设备池中选择最小可行 TP。输入/输出如需落盘只能写入
+   `.work/static_oom/`，每个 attempt 只执行一次。
 4. **TP 决策。** 推荐阶段不启动服务、不占用 NPU 或端口。得到可行最小 TP 后，使用
    `input_contract.py --resolve-tp <tp> --resolution-source static_oom` 仅对已缓存的
    normalized object 做轻量约束检查；不得再次执行完整输入校验、重新读取 `config.json` 或
    调用 OOM 预检。把最终 TP 写入内存中的 `launch.tp`，复用原有静态 OOM 结果。
 5. **资源检查。** 复用 probe 已验证的端口探测工具和同一执行上下文，检查 Provider 可见
-   NPU 和端口。把实际选中的设备和端口写入内存中的 `resources`。设备不足、端口不可用、
-   状态无法确认或探测工具不可用时立即记录错误，停止服务（如已启动），清理现场并退出，
-   不等待资源释放、不换卡、不换端口。`npu_unavailable`、`insufficient_available_devices`、
-   `port_unavailable`、`port_probe_failed` 和 `port_probe_tool_unavailable` 均属于硬失败。
-6. **服务和验收。** 使用已选设备和端口启动 `vllm serve`，把实际使用的所有 CLI 参数归一化
+   NPU 和端口。用户指定了可见设备或端口时，只能在指定范围内选择；未指定时，从探测到的
+   空闲设备和端口候选中选择。把实际选中的设备和端口写入内存中的 `resources`。
+   若资源在服务启动时发生竞态占用或变为不可用，停止已启动的服务并在同一 attempt 内
+   最多重新探测、选择并启动一次；只重做资源选择，复用环境 probe、输入校验、静态 OOM
+   和 TP 决策结果。重选不得等待释放、扩大设备或端口范围，探测工具不可用或状态无法确认
+   时直接失败。第二次资源选择或启动仍失败，记录错误、清理现场并退出；不得自行创建新的
+   attempt。
+6. **服务和验收。** ordinary 启动一个 `vllm serve`；PD 按
+   [`references/pd-deployment.md`](references/pd-deployment.md) 的顺序启动 P/D、Proxy 和
+   可选 Mooncake。把实际使用的所有 CLI 参数归一化
    到内存中的 `launch.parameters`，并将 TP、DP、mns、mnbt 同步到对应快捷字段。启动等待
    按短间隔轮询进程状态、日志新增内容和健康接口；发现明确错误、OOM、进程退出或服务验收
    失败时立即停止等待。健康接口、`/v1/models`、served model identity 和最小请求通过后，
@@ -94,8 +114,16 @@ Provider 至少提供：
 报告必须填写 `failure.stage`、`failure.type`、`failure.reason`；每次执行错误都追加到
 `errors`，错误项不得包含时间戳、完整 stdout/stderr、日志正文或临时文件路径。
 
-除 NPU/端口等资源硬失败外，修复上限为一次；修复后仍失败则追加错误并终止。不得通过修改
-冻结的 TP、DP、设备、端口或模型参数制造“修复”。最终报告不包含阶段执行耗时或时间戳。
+资源竞态只允许按第 5 步在当前 attempt 内重选一次；第二次仍失败则追加错误并终止。
+其它服务启动/验收瞬态错误仍最多修复一次。不得通过修改冻结的 TP、DP、设备、端口或模型
+参数制造“修复”，也不得自行创建新的 attempt。最终报告不包含阶段执行耗时或时间戳。
+
+## PD 分离部署
+
+P/D 设备池必须互不重叠。未指定角色 TP 时，分别在各自设备池中选择静态 OOM 可行的
+最小 TP；P/D 的 `/health` 只检查 HTTP 状态码 `200`，不检查响应体。Proxy 脚本、命令
+模板、KV connector、Mooncake、后端列表、启动顺序、链路验收和清理规则见
+[`references/pd-deployment.md`](references/pd-deployment.md)。
 
 ## 参考资料
 
@@ -104,5 +132,8 @@ Provider 至少提供：
 - [输入契约](references/input-contract.md)
 - [静态 OOM 规则](references/static-oom.md)
 - [资源预检](references/resource-probes.md)
+- [PD 分离部署](references/pd-deployment.md)
+- [PD 输入校验](scripts/pd_input_contract.py)
+- [PD 静态 OOM](scripts/pd_static_oom_precheck.py)
 - [报告校验脚本](scripts/report_schema.py)
 - [报告 I/O](scripts/report_io.py)
