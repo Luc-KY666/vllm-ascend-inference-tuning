@@ -22,7 +22,7 @@ python <skill-root>/scripts/static_oom_precheck.py --input /path/to/input.json
 
 脚本结果必须直接汇总到内存中的静态 OOM 上下文；如果执行器需要保留原始输入或 stdout，可
 临时写入 `<attempt-dir>/.work/static_oom/`。清理阶段必须删除这些临时文件，最终报告只
-保留静态 OOM 结论影响的 `launch.tp`，不得写入预检输入、结果或证据。
+在 `launch.parameters` 中保留静态 OOM 结论影响的 TP，不得写入预检输入、结果或证据。
 
 ## 推荐模式
 

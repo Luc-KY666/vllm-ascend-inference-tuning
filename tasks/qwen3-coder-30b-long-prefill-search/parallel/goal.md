@@ -4,8 +4,9 @@ $goal-plus mode=autonomous max_parallel=2 workspace_provider=git_worktree promot
 
 模型服务身份为 `qwen3-coder-30b`。benchmark 固定为 preset 模式的 `long_prefill` 场景；
 数据集 ID 和适配器由 benchmark 按场景 contract 从默认 `~/.cache` 派生解析，用户不重复
-输入数据集 ID 或路径。只接受 deployment v2 与 benchmark v2 artifact，
-以官方 raw result 的 `TTFT_P95` 为唯一评分字段并最小化它。baseline、candidate 和
+输入数据集 ID 或路径。只接受 `vllm-ascend-deployment` v3 与
+`vllm-ascend-benchmark` v3 artifact；以官方 raw result 的 `TTFT_P95` 为唯一评分字段，
+v3 报告中固定映射为 `result.ttft_ms.p95`，并最小化它。baseline、candidate 和
 promotion 必须保持相同的模型、场景、指标口径和 workload。
 
 ## 可调参数

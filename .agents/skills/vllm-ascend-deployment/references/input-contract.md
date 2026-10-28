@@ -53,8 +53,8 @@ python <skill-root>/scripts/input_contract.py \
 该命令只输出更新后的规范化对象，不读取或写入任何部署文件，也不执行静态 OOM。它只依据
 第一次校验缓存的 `allowed_tp`、设备数量、DP 和 attention heads 做轻量检查，不重新执行完整
 输入契约或读取 `config.json`。调用方将前后对象和 `static_oom_reused=true`、
-`recheck_performed=false` 保存在内存上下文中，复用原有 OOM 结果；最终报告只写入解析后的
-`launch.tp`。
+`recheck_performed=false` 保存在内存上下文中，复用原有 OOM 结果；最终报告只在
+`launch.parameters` 中写入解析后的 TP。
 
 ## PD 模式扩展
 

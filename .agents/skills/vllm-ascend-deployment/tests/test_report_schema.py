@@ -29,7 +29,7 @@ class ReportSchemaTests(unittest.TestCase):
         self.assertEqual(report["schema_version"], report_schema.SCHEMA_VERSION)
         self.assertNotIn("timings", report)
         self.assertNotIn("stages", report)
-        self.assertEqual(set(report["launch"]), {"tp", "dp", "mns", "mnbt", "parameters"})
+        self.assertEqual(set(report["launch"]), {"parameters"})
 
     def test_failure_and_error_contract(self) -> None:
         report = canonical_report()
@@ -65,12 +65,11 @@ class ReportSchemaTests(unittest.TestCase):
     def test_launch_parameters_and_resources_are_checked(self) -> None:
         report = canonical_report()
         report["resources"] = {"npu": [0, 1], "port": 8117}
-        report["launch"].update({"tp": 2, "dp": 1, "mns": 32, "mnbt": 4096})
         report["launch"]["parameters"] = {
-            "tensor_parallel_size": 2,
-            "data_parallel_size": 1,
-            "max_num_seqs": 32,
-            "max_num_batched_tokens": 4096,
+            "--tensor-parallel-size": 2,
+            "--data-parallel-size": 1,
+            "--max-num-seqs": 32,
+            "--max-num-batched-tokens": 4096,
         }
         self.assertEqual(report_schema.validate_report(report), [])
         report["resources"]["port"] = 0

@@ -18,10 +18,6 @@
     "tokenizer": null
   },
   "launch": {
-    "tp": null,
-    "dp": null,
-    "mns": null,
-    "mnbt": null,
     "parameters": {}
   },
   "failure": null,

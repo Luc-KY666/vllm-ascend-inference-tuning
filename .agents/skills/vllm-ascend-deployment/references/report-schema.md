@@ -14,7 +14,7 @@
 - `resources`：实际使用的 `npu` 数组和 `port`；
 - `service`：`backend`、`base_url`、`endpoint`、`health_endpoint`、`models_endpoint` 和
   `tokenizer`；
-- `launch`：`tp`、`dp`、`mns`、`mnbt` 以及 `parameters`；
+- `launch`：只包含 `parameters`，保存实际传给 `vllm serve` 的参数；
 - `failure`：成功时为 `null`，失败时包含 `stage`、`type` 和 `reason`；
 - `errors`：按发生顺序追加的错误数组。
 
@@ -23,10 +23,9 @@
 
 ## 启动参数
 
-`launch.tp`、`launch.dp`、`launch.mns` 和 `launch.mnbt` 是便于用户和 benchmark 读取的规范化
-快捷字段，分别对应 `tensor_parallel_size`、`data_parallel_size`、`max_num_seqs` 和
-`max_num_batched_tokens`。`launch.parameters` 必须保存本次实际传给 `vllm serve` 的所有
-参数，使用稳定的 snake_case flag 名称；未使用的可选参数可以省略，不得填入宿主默认值。
+`launch.parameters` 必须保存本次实际传给 `vllm serve` 的所有参数，使用稳定的 flag 名称；
+TP、DP、`max_num_seqs` 和 `max_num_batched_tokens` 等参数只在此处记录一次。未使用的可选
+参数可以省略，不得填入宿主默认值。
 
 ## 错误
 
@@ -44,5 +43,5 @@
 
 PD 仍使用本文件定义的 v3 最终报告，不恢复旧版阶段报告结构。`service.base_url` 指向
 Proxy；`resources.npu` 保存实际使用的设备；P/D、Proxy 和 Mooncake 的展开命令、角色
-端口及链路结果放入 `launch.parameters`。普通模式的 `launch.tp`/`launch.dp` 保持不变；
-PD 的角色级 TP/DP 使用 `launch.parameters` 中的角色字段记录。
+端口及链路结果放入 `launch.parameters`。普通模式和 PD 的角色级 TP/DP 均使用
+`launch.parameters` 中的对应参数记录。

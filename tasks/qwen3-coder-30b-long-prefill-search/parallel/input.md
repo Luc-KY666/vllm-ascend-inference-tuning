@@ -7,12 +7,12 @@
 | --- | --- |
 | `model_path` | `<模型路径>` |
 | `max_attempts` | `<最大尝试次数>` |
-| `authorized_ascend_npu_devices` | `<授权 Ascend NPU 列表，例如 0,1,2,3>` |
+| `authorized_ascend_npu_devices` | `<授权 Ascend NPU 设备列表>` |
 | `max_tp_dp` | `<TP * DP 最大值>` |
-| `tp` | `<候选值，例如 1,2,4>` |
-| `dp` | `<候选值，例如 1,2>` |
-| `max_num_seqs` | `<候选值，例如 32,64,128>` |
-| `max_num_batched_tokens` | `<候选值，例如 1024,2048,4096>` |
+| `tp` | `<候选值，例如 2>` |
+| `dp` | `<候选值，例如 1>` |
+| `max_num_seqs` | `<候选值，例如 16-256>` |
+| `max_num_batched_tokens` | `<候选值，例如 64-8192>` |
 | `num_prompts` | `<请求数>` |
 | `max_concurrency` | `<最大并发数>` |
 | `request_rate` | `<请求到达速率>` |

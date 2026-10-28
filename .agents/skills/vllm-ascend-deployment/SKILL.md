@@ -28,7 +28,7 @@ description: 在外部 Provider 冻结的模型、设备、端口和输出合同
 - `model`：模型名称和权重路径；
 - `resources`：实际使用的 NPU 和端口；
 - `service`：backend、base URL、endpoint、健康/模型接口和 tokenizer；
-- `launch`：TP、DP、mns、mnbt 以及所有实际传给 `vllm serve` 的参数；
+- `launch`：所有实际传给 `vllm serve` 的参数，统一写入 `parameters`；
 - `failure` 和 `errors`：失败阶段、失败原因和按发生顺序追加的错误。
 
 报告不得包含阶段对象、probe/help/log 路径、原始输入、静态 OOM 结果、清理结果、PID、
@@ -87,7 +87,7 @@ Provider 至少提供：
 4. **TP 决策。** 推荐阶段不启动服务、不占用 NPU 或端口。得到可行最小 TP 后，使用
    `input_contract.py --resolve-tp <tp> --resolution-source static_oom` 仅对已缓存的
    normalized object 做轻量约束检查；不得再次执行完整输入校验、重新读取 `config.json` 或
-   调用 OOM 预检。把最终 TP 写入内存中的 `launch.tp`，复用原有静态 OOM 结果。
+   调用 OOM 预检。把最终 TP 写入内存中的 `launch.parameters`，复用原有静态 OOM 结果。
 5. **资源检查。** 复用 probe 已验证的端口探测工具和同一执行上下文，检查 Provider 可见
    NPU 和端口。用户指定了可见设备或端口时，只能在指定范围内选择；未指定时，从探测到的
    空闲设备和端口候选中选择。把实际选中的设备和端口写入内存中的 `resources`。
@@ -99,8 +99,8 @@ Provider 至少提供：
 6. **服务和验收。** ordinary 启动一个 `vllm serve`；PD 按
    [`references/pd-deployment.md`](references/pd-deployment.md) 的顺序启动 P/D、Proxy 和
    可选 Mooncake。把实际使用的所有 CLI 参数归一化
-   到内存中的 `launch.parameters`，并将 TP、DP、mns、mnbt 同步到对应快捷字段。启动等待
-   按短间隔轮询进程状态、日志新增内容和健康接口；发现明确错误、OOM、进程退出或服务验收
+   到内存中的 `launch.parameters`。启动等待按短间隔轮询进程状态、日志新增内容和健康接口；
+   发现明确错误、OOM、进程退出或服务验收
    失败时立即停止等待。健康接口、`/v1/models`、served model identity 和最小请求通过后，
    把最终服务接口写入内存中的 `service`。服务启动/健康阶段的明确非资源瞬态错误最多在
    同一 attempt 内修复一次，只重跑服务阶段并复用 probe、输入、OOM、TP、设备和端口结果。

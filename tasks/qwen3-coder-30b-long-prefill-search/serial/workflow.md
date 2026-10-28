@@ -8,8 +8,10 @@
 - 模型服务身份为 `qwen3-coder-30b`，模型路径来自 `input.md`。
 - 场景为 preset 模式的 `long_prefill`；数据集 ID 和适配器由 benchmark 按场景 contract
   派生并从默认 `~/.cache` 解析，不接受用户重复传入数据集 ID 或路径。
-- 只接受 `vllm-ascend-deployment` v2 与 `vllm-ascend-benchmark` v2 artifact。
-- 唯一评分字段为官方 raw result 中冻结的 `TTFT_P95`，优化方向为最小化。
+- 只接受 `vllm-ascend-deployment` v3 与 `vllm-ascend-benchmark` v3 artifact；部署和压测报告分别
+  必须通过对应 v3 schema 校验，拒绝 v2 或旧中间区块。
+- 唯一评分字段为官方 raw result 中冻结的 `TTFT_P95`，在 benchmark v3 报告中映射为
+  `result.ttft_ms.p95`，优化方向为最小化。
 - baseline、candidate 和 promotion 使用同一模型、场景、指标口径和三个 workload 输入。
 
 ## 可调参数

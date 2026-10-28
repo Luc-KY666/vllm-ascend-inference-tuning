@@ -31,7 +31,7 @@ SERVICE_KEYS = {
     "models_endpoint",
     "tokenizer",
 }
-LAUNCH_KEYS = {"tp", "dp", "mns", "mnbt", "parameters"}
+LAUNCH_KEYS = {"parameters"}
 FAILURE_KEYS = {"stage", "type", "reason"}
 ERROR_FIELDS = {"stage", "type", "message", "recoverable", "resolved"}
 FORBIDDEN_KEYS = {
@@ -162,10 +162,6 @@ def validate_report(report: Mapping[str, Any]) -> list[str]:
 
     launch = _require_mapping(report.get("launch"), "launch", errors)
     _check_exact_keys(launch, LAUNCH_KEYS, "launch", errors)
-    for field in ("tp", "dp", "mns", "mnbt"):
-        value = launch.get(field)
-        if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value <= 0):
-            errors.append(f"launch.{field} 必须是正整数或 null")
     parameters = launch.get("parameters")
     if not isinstance(parameters, Mapping):
         errors.append("launch.parameters 必须是 object")
