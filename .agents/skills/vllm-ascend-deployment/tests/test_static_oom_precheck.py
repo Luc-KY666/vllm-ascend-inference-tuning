@@ -8,7 +8,6 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
-from unittest.mock import patch
 
 
 SCRIPT_DIR = Path(__file__).resolve().parents[1] / "scripts"
@@ -62,6 +61,49 @@ class StaticOomPrecheckTests(unittest.TestCase):
                 target = target[part]  # type: ignore[index]
             target[parts[-1]] = value  # type: ignore[index]
         return precheck_module.precheck(payload)
+
+    def write_dual_inputs(
+        self, root: Path, payload: dict[str, object] | None = None
+    ) -> tuple[Path, Path]:
+        source = copy.deepcopy(payload or self.payload)
+        model = source["model"]
+        hardware = source["hardware"]
+        runtime = source["runtime"]
+        deployment_path = root / "deployment_input.json"
+        runtime_path = root / "runtime.json"
+        visible_devices = [str(index) for index in range(hardware["device_count"])]
+        deployment_path.write_text(
+            json.dumps(
+                {
+                    "model": {
+                        "model_path": "/model",
+                        "weight_bytes": model["weight_bytes"],
+                        "config": model["config"],
+                    },
+                    "resources": {
+                        "visible_devices": visible_devices,
+                        "card_memory_bytes": hardware["card_memory_bytes"],
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        runtime_path.write_text(
+            "\ufeff"
+            + json.dumps(
+                {
+                    "schema_version": "vllm-ascend-runtime-v1",
+                    "model": {"config": model["config"]},
+                    "runtime": runtime,
+                    "resources": {
+                        "visible_devices": visible_devices,
+                        "card_memory_bytes": hardware["card_memory_bytes"],
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        return deployment_path, runtime_path
 
     def test_current_configuration_passes(self) -> None:
         result = self.result()
@@ -303,15 +345,16 @@ class StaticOomPrecheckTests(unittest.TestCase):
 
     def test_main_accepts_bom_and_writes_stdout_only(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            input_path = Path(temp_dir) / "static-oom-input.json"
-            input_path.write_text(
-                "\ufeff" + json.dumps(self.payload),
-                encoding="utf-8",
-            )
+            deployment_path, runtime_path = self.write_dual_inputs(Path(temp_dir))
             stdout = io.StringIO()
             with redirect_stdout(stdout):
                 exit_code = precheck_module.main(
-                    ["--input", str(input_path)]
+                    [
+                        "--deployment-input",
+                        str(deployment_path),
+                        "--runtime",
+                        str(runtime_path),
+                    ]
                 )
             self.assertEqual(exit_code, 0)
             output = json.loads(stdout.getvalue())
@@ -320,47 +363,74 @@ class StaticOomPrecheckTests(unittest.TestCase):
 
     def test_main_returns_reject_exit_code_and_preserves_report(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            input_path = Path(temp_dir) / "input.json"
-            input_path.write_text(json.dumps({**self.payload, "model": {"weight_bytes": 900, "config": self.payload["model"]["config"]}}), encoding="utf-8")
+            payload = copy.deepcopy(self.payload)
+            payload["model"]["weight_bytes"] = 900
+            deployment_path, runtime_path = self.write_dual_inputs(Path(temp_dir), payload)
             stdout = io.StringIO()
             with redirect_stdout(stdout):
                 exit_code = precheck_module.main(
-                    ["--input", str(input_path)]
+                    [
+                        "--deployment-input",
+                        str(deployment_path),
+                        "--runtime",
+                        str(runtime_path),
+                    ]
                 )
             self.assertEqual(exit_code, 3)
             self.assertEqual(json.loads(stdout.getvalue())["status"], "reject")
 
     def test_main_reports_invalid_json_with_exit_code_two(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            input_path = Path(temp_dir) / "invalid.json"
-            input_path.write_text("{", encoding="utf-8")
+            deployment_path = Path(temp_dir) / "invalid.json"
+            deployment_path.write_text("{", encoding="utf-8")
+            runtime_path = Path(temp_dir) / "runtime.json"
+            runtime_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "vllm-ascend-runtime-v1",
+                        "runtime": {},
+                    }
+                ),
+                encoding="utf-8",
+            )
             stdout = io.StringIO()
             with redirect_stdout(stdout):
-                exit_code = precheck_module.main(["--input", str(input_path)])
+                exit_code = precheck_module.main(
+                    [
+                        "--deployment-input",
+                        str(deployment_path),
+                        "--runtime",
+                        str(runtime_path),
+                    ]
+                )
             self.assertEqual(exit_code, 2)
             result = json.loads(stdout.getvalue())
             self.assertEqual(result["status"], "unknown")
             self.assertIn("输入无效", result["message"])
 
-    def test_main_accepts_stdin(self) -> None:
-        stdout = io.StringIO()
-        with patch("sys.stdin", io.StringIO(json.dumps(self.payload))), redirect_stdout(stdout):
-            exit_code = precheck_module.main(["--input", "-"])
-        self.assertEqual(exit_code, 0)
-        self.assertEqual(json.loads(stdout.getvalue())["status"], "pass")
-
-    def test_stdin_does_not_create_input_or_report_artifacts(self) -> None:
+    def test_pd_dual_input_uses_local_dp_one(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            input_artifact = Path(temp_dir) / "static-oom-input.json"
-            output_path = Path(temp_dir) / "static-oom-report.json"
+            payload = copy.deepcopy(self.payload)
+            payload["runtime"]["dp"] = 2
+            payload["hardware"]["device_count"] = 2
+            deployment_path, runtime_path = self.write_dual_inputs(Path(temp_dir), payload)
+            deployment = json.loads(deployment_path.read_text(encoding="utf-8"))
+            deployment["deployment"] = {"mode": "single_node_pd"}
+            deployment_path.write_text(json.dumps(deployment), encoding="utf-8")
             stdout = io.StringIO()
-            with patch("sys.stdin", io.StringIO(json.dumps(self.payload))), redirect_stdout(stdout):
-                exit_code = precheck_module.main(["--input", "-"])
+            with redirect_stdout(stdout):
+                exit_code = precheck_module.main(
+                    [
+                        "--deployment-input",
+                        str(deployment_path),
+                        "--runtime",
+                        str(runtime_path),
+                    ]
+                )
             self.assertEqual(exit_code, 0)
-            self.assertEqual(json.loads(stdout.getvalue())["status"], "pass")
-            self.assertFalse(input_artifact.exists())
-            self.assertFalse(output_path.exists())
-
+            result = json.loads(stdout.getvalue())
+            self.assertEqual(result["status"], "pass")
+            self.assertEqual(result["current"]["dp"], 1)
 
 if __name__ == "__main__":
     unittest.main()

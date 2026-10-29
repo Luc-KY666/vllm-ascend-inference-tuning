@@ -1,8 +1,9 @@
 # 部署输入契约
 
-ordinary deployment 的 Provider 输入由 agent 根据最终的 `vllm serve` 启动命令组装为
-JSON，再由 `scripts/input_contract.py` 一次规范化。脚本只返回 stdout JSON，不创建目录、
-不写部署报告；规范化结果保存在内存中，供静态 OOM、TP 决策和服务启动复用。
+ordinary deployment 的 Provider 输入，以及 PD 每个实例的节点输入，都由 agent 根据最终的
+`vllm serve` 启动命令组装为 JSON，再由 `scripts/input_contract.py` 一次规范化。脚本返回
+stdout JSON；指定 `--runtime-output` 时额外写出供 static OOM 使用的临时 runtime artifact，
+不写部署报告。规范化结果保存在内存中，供静态 OOM、TP 决策和服务启动复用。
 
 ## 调用方式
 
@@ -12,7 +13,8 @@ artifact，不重新执行 `vllm serve --help`：
 ```text
 python <skill-root>/scripts/input_contract.py \
   --input /absolute/attempt-dir/deployment-input.json \
-  --serve-help-file /absolute/attempt-dir/vllm-serve-help-all.txt
+  --serve-help-file /absolute/attempt-dir/vllm-serve-help-all.txt \
+  --runtime-output /absolute/attempt-dir/.work/runtime.json
 ```
 
 `--input -` 可从 stdin 读取 JSON。TP 推荐回写使用已经规范化的 JSON，从 stdin 读取，不
@@ -60,6 +62,8 @@ python <skill-root>/scripts/input_contract.py \
   },
   "resources": {
     "visible_devices": ["0", "1"],
+    "role_device_count": 2,
+    "card_memory_bytes": 68719476736,
     "port_candidates": [8117, 8118],
     "preferred_port": 8117
   },
@@ -69,6 +73,12 @@ python <skill-root>/scripts/input_contract.py \
   }
 }
 ```
+
+`resources.card_memory_bytes` 是 static OOM 所需的单卡显存事实，agent 必须在组装每份
+`deployment_input.json` 时填写为正整数。该值必须来自 Provider 冻结的硬件事实或当前环境
+probe，不能由 agent 根据模型大小、设备数量或显存比例推算，也不能省略后交给 static OOM
+补默认值。PD 模式下每个 Prefill/Decode 节点都填写自己设备池对应的卡型显存值；
+`role_device_count` 只表示角色级 DP 总设备数，不替代 `card_memory_bytes`。
 
 模型路径、served model name、TP、DP、mns、mnbt、显存比例、dtype、quantization、block
 size、max model length、tokenizer 和 port 等启动值必须来自 `serve.argv`。`runtime` 只
@@ -117,7 +127,9 @@ help 文件必须可读、包含 `usage: vllm serve` 和至少一个 option 声�
 - `tp`、`dp`、`max_num_seqs`、`max_num_batched_tokens` 和 `block_size` 为正整数，且
   `0 < gpu_memory_utilization <= 1`；
 - `max_num_batched_tokens >= max_num_seqs`；
-- `tp * dp` 不超过可见设备数或 `resources.max_tp_dp`；
+- `tp` 不超过当前实例的 `resources.visible_devices` 数量；
+- `tp * dp` 不超过 `resources.role_device_count`（未提供时回退到可见设备数量）或
+  `resources.max_tp_dp`；
 - `num_attention_heads` 能被 TP 整除；
 - `allowed_tp`、`official_min_tp`、设备 ID 和端口候选的格式与归属；
 - `preferred_port`、实际 port 必须属于 `port_candidates`；
@@ -157,8 +169,28 @@ gpu_memory_utilization=0.9, min_required_context_len=4096, block_size=128
 }
 ```
 
-`runtime` 可直接交给 ordinary static OOM；原始 argv 和 help 正文不需要再次写入临时阶段
-文件。
+`runtime` 是 static OOM 双输入中的规范化部分；原始 argv 和 help 正文不需要再次写入临时
+阶段文件。PD 的每个实例使用本节同一 schema：`visible_devices` 是本地设备，
+`role_device_count` 是该 Prefill/Decode DP 角色的总设备数。
+
+使用 `--runtime-output` 时，脚本额外写出临时 `vllm-ascend-runtime-v1` artifact：
+
+```json
+{
+  "schema_version": "vllm-ascend-runtime-v1",
+  "model": {
+    "config": {},
+    "config_digest": "sha256..."
+  },
+  "runtime": {},
+  "resources": {}
+}
+```
+
+该 artifact 只包含已校验的 runtime、config 摘要/digest 和资源；若原始 model 输入提供
+`weight_bytes` 或 `weight_gib`，也会保留给 static OOM 使用。输入无效时不得写出 artifact。
+static OOM 必须把它与原始 `deployment_input.json` 一起传入，不得由 agent 重新拼装等价
+payload。
 
 ## TP 解析
 
@@ -168,12 +200,13 @@ gpu_memory_utilization=0.9, min_required_context_len=4096, block_size=128
 updated = resolve_recommended_tp(normalized, recommended_tp, "static_oom")
 ```
 
-该操作只检查缓存的 `allowed_tp`、设备数量、DP、`max_tp_dp` 和 attention heads，不重读
-config、不重读 help、不再次执行完整输入校验。它将 `runtime.tp` 更新为推荐值，并在
-`serve.argv` 中追加或更新 `--tensor-parallel-size <tp>`，供后续服务启动直接复用。
+该操作只检查缓存的 `allowed_tp`、本地设备数量、角色设备数、DP、`max_tp_dp` 和
+attention heads，不重读 config、不重读 help、不再次执行完整输入校验。它将 `runtime.tp`
+更新为推荐值，并在 `serve.argv` 中追加或更新 `--tensor-parallel-size <tp>`，供后续服务
+启动直接复用。
 
 ## PD 模式
 
-`deployment.mode=single_node_pd` 仍调用 `scripts/pd_input_contract.py`，本次不迁移 PD
-角色命令。P/D 设备池、端口唯一性和角色 TP 规则见
-[`pd-deployment.md`](pd-deployment.md)。
+PD 不再调用专用输入脚本。agent 将每个 Prefill/Decode 实例展开为独立的
+`deployment_input_<role><rank>.json`，并分别调用本脚本；P/D 设备池、端口唯一性、connector
+和跨实例拓扑规则由 agent 按 [`pd-deployment.md`](pd-deployment.md) 处理。

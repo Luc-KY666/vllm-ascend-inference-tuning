@@ -4,6 +4,11 @@
 静态 OOM、资源探测、服务日志、PID、probe/help、清理和诊断结果不得进入报告；需要保留的
 中间结果只写入内存或 `.work/`，清理后删除。
 
+普通模式的验收必须实际请求 `models_endpoint`、`endpoint` 对应的 completion 和 chat
+接口。PD 模式的 `service.base_url` 指向 Proxy；Proxy 不提供 `/v1/models` 时仍保留
+`models_endpoint` 字段以兼容 v3 结构，但该 endpoint 不作为 PD 成功条件，PD 只验收两个
+生成接口和 P/D 日志链路。
+
 ## 顶层字段
 
 报告只允许包含：

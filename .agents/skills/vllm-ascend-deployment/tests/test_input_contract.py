@@ -28,6 +28,9 @@ options:
   --tokenizer TOKENIZER
   --tensor-parallel-size TENSOR_PARALLEL_SIZE, -tp TENSOR_PARALLEL_SIZE
   --data-parallel-size DATA_PARALLEL_SIZE, -dp DATA_PARALLEL_SIZE
+  --data-parallel-rank DATA_PARALLEL_RANK
+  --data-parallel-address DATA_PARALLEL_ADDRESS
+  --data-parallel-rpc-port DATA_PARALLEL_RPC_PORT
   --max-num-seqs MAX_NUM_SEQS
   --max-num-batched-tokens MAX_NUM_BATCHED_TOKENS
   --gpu-memory-utilization GPU_MEMORY_UTILIZATION
@@ -238,6 +241,90 @@ class InputContractTests(unittest.TestCase):
         self.assertEqual(result["runtime"]["tp"], 2)
         self.assertEqual(result["serve"]["argv"][-2:], ["--tensor-parallel-size", "2"])
 
+    def test_role_device_count_allows_role_dp_with_local_devices(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            model = root / "model"
+            argv = self.argv(model)
+            argv[argv.index("--tensor-parallel-size") + 1] = "1"
+            argv[argv.index("--data-parallel-size") + 1] = "2"
+            payload = self.payload(root, argv=argv)
+            payload["resources"] = {
+                "visible_devices": ["0"],
+                "role_device_count": 2,
+                "port_candidates": [18117],
+            }
+            result = self.validate(payload)
+        self.assertEqual(result["input_status"], "pass")
+        self.assertEqual(result["resources"]["role_device_count"], 2)
+
+    def test_role_device_count_rejects_excessive_role_dp(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            model = root / "model"
+            argv = self.argv(model)
+            argv[argv.index("--tensor-parallel-size") + 1] = "1"
+            argv[argv.index("--data-parallel-size") + 1] = "2"
+            payload = self.payload(root, argv=argv)
+            payload["resources"] = {
+                "visible_devices": ["0"],
+                "role_device_count": 1,
+                "port_candidates": [18117],
+            }
+            result = self.validate(payload)
+        self.assertEqual(result["input_status"], "invalid")
+        self.assertTrue(any("角色可用设备数量" in error for error in result["diagnostics"]["errors"]))
+
+    def test_local_tp_is_checked_separately_from_role_capacity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            model = root / "model"
+            argv = self.argv(model)
+            argv[argv.index("--data-parallel-size") + 1] = "2"
+            payload = self.payload(root, argv=argv)
+            payload["resources"] = {
+                "visible_devices": ["0"],
+                "role_device_count": 2,
+                "port_candidates": [18117],
+            }
+            result = self.validate(payload)
+        self.assertEqual(result["input_status"], "invalid")
+        self.assertTrue(any("当前实例可见设备数量" in error for error in result["diagnostics"]["errors"]))
+
+    def test_resolve_recommended_tp_uses_role_device_count(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            model = root / "model"
+            argv = self.argv(model, include_tp=False)
+            argv[argv.index("--data-parallel-size") + 1] = "2"
+            payload = self.payload(root, argv=argv)
+            payload["resources"] = {
+                "visible_devices": ["0"],
+                "role_device_count": 2,
+                "port_candidates": [18117],
+            }
+            normalized = self.validate(payload)
+            result = input_contract.resolve_recommended_tp(normalized, 1, "static_oom")
+        self.assertEqual(normalized["input_status"], "missing_parameters")
+        self.assertEqual(result["input_status"], "pass")
+        self.assertEqual(result["runtime"]["tp"], 1)
+
+    def test_missing_role_device_count_keeps_ordinary_device_bound(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            model = root / "model"
+            argv = self.argv(model)
+            argv[argv.index("--tensor-parallel-size") + 1] = "1"
+            argv[argv.index("--data-parallel-size") + 1] = "2"
+            payload = self.payload(root, argv=argv)
+            payload["resources"] = {
+                "visible_devices": ["0"],
+                "port_candidates": [18117],
+            }
+            result = self.validate(payload)
+        self.assertEqual(result["input_status"], "invalid")
+        self.assertTrue(any("角色可用设备数量" in error for error in result["diagnostics"]["errors"]))
+
     def test_invalid_model_path_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -255,19 +342,86 @@ class InputContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             payload = self.payload(root)
+            payload["model"] = {"weight_bytes": 123}
             input_path = root / "deployment-input.json"
             help_path = root / "vllm-serve-help-all.txt"
+            runtime_path = root / ".work" / "runtime.json"
             input_path.write_text(json.dumps(payload), encoding="utf-8")
             help_path.write_text(HELP_TEXT, encoding="utf-8")
             output = io.StringIO()
             with redirect_stdout(output):
                 code = input_contract.main(
-                    ["--input", str(input_path), "--serve-help-file", str(help_path)]
+                    [
+                        "--input",
+                        str(input_path),
+                        "--serve-help-file",
+                        str(help_path),
+                        "--runtime-output",
+                        str(runtime_path),
+                    ]
                 )
             result = json.loads(output.getvalue())
+            runtime_result = json.loads(runtime_path.read_text(encoding="utf-8"))
         self.assertEqual(code, 0)
         self.assertEqual(result["input_status"], "pass")
         self.assertEqual(result["serve"]["help_digest"], hashlib.sha256(HELP_TEXT.encode()).hexdigest())
+        self.assertEqual(runtime_result["schema_version"], "vllm-ascend-runtime-v1")
+        self.assertEqual(runtime_result["runtime"]["tp"], 2)
+        self.assertEqual(runtime_result["resources"]["visible_devices"], ["0", "1"])
+        self.assertEqual(runtime_result["model"]["weight_bytes"], 123)
+        self.assertNotIn("serve", runtime_result)
+
+    def test_cli_writes_runtime_for_missing_tp(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            payload = self.payload(root, argv=self.argv(root / "model", include_tp=False))
+            input_path = root / "deployment-input.json"
+            help_path = root / "vllm-serve-help-all.txt"
+            runtime_path = root / ".work" / "runtime.json"
+            input_path.write_text(json.dumps(payload), encoding="utf-8")
+            help_path.write_text(HELP_TEXT, encoding="utf-8")
+            output = io.StringIO()
+            with redirect_stdout(output):
+                code = input_contract.main(
+                    [
+                        "--input",
+                        str(input_path),
+                        "--serve-help-file",
+                        str(help_path),
+                        "--runtime-output",
+                        str(runtime_path),
+                    ]
+                )
+            result = json.loads(output.getvalue())
+            runtime_result = json.loads(runtime_path.read_text(encoding="utf-8"))
+        self.assertEqual(code, 0)
+        self.assertEqual(result["input_status"], "missing_parameters")
+        self.assertIsNone(runtime_result["runtime"]["tp"])
+
+    def test_invalid_cli_input_does_not_write_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            payload = self.payload(root)
+            payload["serve"]["argv"].append("--not-in-help")
+            input_path = root / "deployment-input.json"
+            help_path = root / "vllm-serve-help-all.txt"
+            runtime_path = root / ".work" / "runtime.json"
+            input_path.write_text(json.dumps(payload), encoding="utf-8")
+            help_path.write_text(HELP_TEXT, encoding="utf-8")
+            output = io.StringIO()
+            with redirect_stdout(output):
+                code = input_contract.main(
+                    [
+                        "--input",
+                        str(input_path),
+                        "--serve-help-file",
+                        str(help_path),
+                        "--runtime-output",
+                        str(runtime_path),
+                    ]
+                )
+        self.assertEqual(code, 2)
+        self.assertFalse(runtime_path.exists())
 
     def test_cli_requires_help_for_normal_validation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

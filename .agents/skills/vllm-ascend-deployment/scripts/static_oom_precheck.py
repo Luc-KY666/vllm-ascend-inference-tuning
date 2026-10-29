@@ -12,6 +12,7 @@ from typing import Any
 
 
 SCHEMA_VERSION = "vllm-ascend-static-oom-v3"
+RUNTIME_SCHEMA_VERSION = "vllm-ascend-runtime-v1"
 GIB = 1024**3
 DTYPE_BYTES = {
     "float32": 4,
@@ -493,14 +494,81 @@ def _read_json(path: str) -> Any:
     return json.loads(Path(path).read_text(encoding="utf-8-sig"))
 
 
+def compose_static_payload(
+    deployment_input: Mapping[str, Any], runtime_artifact: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Merge the raw deployment contract with input-contract's runtime view."""
+
+    if runtime_artifact.get("schema_version") != RUNTIME_SCHEMA_VERSION:
+        raise ValueError("runtime.json schema_version 无效")
+
+    raw_model = _mapping(deployment_input.get("model"))
+    artifact_model = _mapping(runtime_artifact.get("model"))
+    model = dict(artifact_model)
+    for field in (
+        "model_path",
+        "served_model_name",
+        "config_path",
+        "weight_bytes",
+        "weight_gib",
+    ):
+        if field in raw_model:
+            model[field] = raw_model[field]
+    if "config" not in model and isinstance(raw_model.get("config"), Mapping):
+        model["config"] = dict(raw_model["config"])
+
+    raw_resources = _mapping(deployment_input.get("resources"))
+    artifact_resources = _mapping(runtime_artifact.get("resources"))
+    resources = dict(raw_resources)
+    resources.update(artifact_resources)
+    visible_devices = resources.get("visible_devices")
+    if not isinstance(visible_devices, list) or not visible_devices:
+        raise ValueError("deployment_input/resources.visible_devices 必须是非空数组")
+    card_memory_bytes = resources.get("card_memory_bytes")
+    device_count = len(visible_devices)
+    if device_count <= 0:
+        raise ValueError("当前实例没有可见设备")
+
+    runtime = dict(_mapping(runtime_artifact.get("runtime")))
+    deployment = _mapping(deployment_input.get("deployment"))
+    if deployment.get("mode") == "single_node_pd":
+        # PD static OOM measures this process's local TP capacity. Role DP is
+        # validated separately by input_contract and the deployment agent.
+        runtime["dp"] = 1
+
+    return {
+        "schema_version": "vllm-ascend-static-oom-input-v1",
+        "recommendation_mode": runtime.get("tp") is None,
+        "model": model,
+        "hardware": {
+            "card_memory_bytes": card_memory_bytes,
+            "device_count": device_count,
+        },
+        "runtime": runtime,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", default="-", help="JSON 输入文件，省略或使用 - 表示 stdin")
+    parser.add_argument(
+        "--deployment-input",
+        required=True,
+        help="原始 deployment_input.json 路径",
+    )
+    parser.add_argument(
+        "--runtime",
+        required=True,
+        help="input_contract.py 生成的 runtime.json 路径",
+    )
     args = parser.parse_args(argv)
     try:
-        payload = _read_json(args.input)
-        if not isinstance(payload, Mapping):
-            raise ValueError("输入必须是 JSON object")
+        deployment_input = _read_json(args.deployment_input)
+        runtime_artifact = _read_json(args.runtime)
+        if not isinstance(deployment_input, Mapping):
+            raise ValueError("deployment_input 必须是 JSON object")
+        if not isinstance(runtime_artifact, Mapping):
+            raise ValueError("runtime.json 必须是 JSON object")
+        payload = compose_static_payload(deployment_input, runtime_artifact)
         result = precheck(payload)
     except (OSError, ValueError, TypeError, OverflowError, AttributeError) as exc:
         result = _unknown_result(f"输入无效: {type(exc).__name__}: {exc}")

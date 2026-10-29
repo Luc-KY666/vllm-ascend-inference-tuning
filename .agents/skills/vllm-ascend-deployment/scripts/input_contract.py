@@ -17,6 +17,7 @@ from typing import Any
 
 
 SCHEMA_VERSION = "vllm-ascend-deployment-input-v3"
+RUNTIME_SCHEMA_VERSION = "vllm-ascend-runtime-v1"
 PD_SCHEMA_VERSION = "vllm-ascend-deployment-input-v2"
 DEFAULTS = {
     "dp": 1,
@@ -32,6 +33,7 @@ SERVICE_DEFAULTS = {
 }
 RESOURCE_FIELDS = {
     "visible_devices",
+    "role_device_count",
     "port_candidates",
     "preferred_port",
     "port",
@@ -487,6 +489,15 @@ def _validate_resources(
         if selected_port is not None and selected_port not in ports:
             errors.append("port 不在 port_candidates 中")
 
+    role_device_count = resources_in.get("role_device_count")
+    if role_device_count is not None and not _positive_int(
+        role_device_count, "role_device_count"
+    ):
+        errors.append("resources.role_device_count 必须是正整数")
+        role_device_count = None
+    elif role_device_count is not None and role_device_count < len(visible):
+        errors.append("resources.role_device_count 不能小于当前实例可见设备数量")
+
     max_tp_dp = resources_in.get("max_tp_dp")
     if max_tp_dp is not None and not _positive_int(max_tp_dp, "max_tp_dp"):
         errors.append("resources.max_tp_dp 必须是正整数")
@@ -495,8 +506,11 @@ def _validate_resources(
     heads = _head_count(config)
     if tp is not None and _positive_int(tp, "tp") and _positive_int(dp, "dp"):
         required = tp * dp
-        if required > len(visible):
-            errors.append("tp * dp 超过 Provider 可见设备数量")
+        if tp > len(visible):
+            errors.append("tp 超过当前实例可见设备数量")
+        role_capacity = role_device_count if role_device_count is not None else len(visible)
+        if required > role_capacity:
+            errors.append("tp * dp 超过角色可用设备数量")
         if _positive_int(max_tp_dp, "max_tp_dp") and required > max_tp_dp:
             errors.append("tp * dp 超过 Provider max_tp_dp")
         if heads is not None and heads % tp:
@@ -505,6 +519,7 @@ def _validate_resources(
     resources = {
         **{key: value for key, value in resources_in.items() if key in RESOURCE_FIELDS},
         "visible_devices": visible,
+        "role_device_count": role_device_count,
         "port_candidates": ports,
         "preferred_port": preferred,
         "port": selected_port,
@@ -650,6 +665,47 @@ def validate_and_build(
     }
 
 
+def _runtime_artifact(
+    payload: Mapping[str, Any], normalized: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Build the temporary, validated runtime view consumed by static OOM."""
+
+    model = _mapping(normalized.get("model"))
+    raw_model = _mapping(payload.get("model"))
+    model = dict(model)
+    for field in ("weight_bytes", "weight_gib"):
+        if field in raw_model:
+            model[field] = raw_model[field]
+    return {
+        "schema_version": RUNTIME_SCHEMA_VERSION,
+        "model": model,
+        "runtime": _mapping(normalized.get("runtime")),
+        "resources": _mapping(normalized.get("resources")),
+    }
+
+
+def _write_runtime_artifact(
+    path: str, payload: Mapping[str, Any], normalized: Mapping[str, Any]
+) -> None:
+    runtime_path = Path(path)
+    runtime_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = runtime_path.with_name(runtime_path.name + ".tmp")
+    try:
+        temporary_path.write_text(
+            json.dumps(
+                _runtime_artifact(payload, normalized),
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        temporary_path.replace(runtime_path)
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
+
+
 def _replace_or_append_tp(argv: list[str], tp: int) -> list[str]:
     result = list(argv)
     names = {"--tensor-parallel-size", "-tp"}
@@ -690,10 +746,22 @@ def resolve_recommended_tp(
         raise ContractError("recommended_tp 不在已校验的 allowed_tp 中")
     dp = runtime.get("dp")
     if _positive_int(dp, "dp"):
+        if isinstance(resources.get("visible_devices"), list) and tp > len(
+            resources["visible_devices"]
+        ):
+            raise ContractError("recommended_tp 超过已校验的当前实例可见设备数量")
         required = tp * dp
         visible = resources.get("visible_devices")
-        if isinstance(visible, list) and required > len(visible):
-            raise ContractError("recommended_tp * dp 超过已校验的可见设备数量")
+        role_device_count = resources.get("role_device_count")
+        role_capacity = (
+            role_device_count
+            if _positive_int(role_device_count, "role_device_count")
+            else len(visible)
+            if isinstance(visible, list)
+            else None
+        )
+        if role_capacity is not None and required > role_capacity:
+            raise ContractError("recommended_tp * dp 超过已校验的角色可用设备数量")
         max_tp_dp = resources.get("max_tp_dp")
         if _positive_int(max_tp_dp, "max_tp_dp") and required > max_tp_dp:
             raise ContractError("recommended_tp * dp 超过已校验的 max_tp_dp")
@@ -743,18 +811,30 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", default="-", help="JSON input file, or - for stdin")
     parser.add_argument("--serve-help-file")
+    parser.add_argument(
+        "--runtime-output",
+        help="写出供 static_oom_precheck.py 使用的临时 runtime.json",
+    )
     parser.add_argument("--resolve-tp", type=int)
     parser.add_argument("--resolution-source", default="static_oom")
     args = parser.parse_args(argv)
     try:
         if args.resolve_tp is not None:
-            result = resolve_recommended_tp(_load_json(args.input), args.resolve_tp, args.resolution_source)
+            if args.runtime_output:
+                raise ContractError("--resolve-tp 不能同时写出 runtime.json")
+            result = resolve_recommended_tp(
+                _load_json(args.input), args.resolve_tp, args.resolution_source
+            )
         else:
             if not args.serve_help_file:
                 raise ContractError("普通输入校验必须提供 --serve-help-file")
             payload = _load_json(args.input)
             help_text, help_digest = _read_help(args.serve_help_file)
             result = validate_and_build(payload, help_text=help_text, help_digest=help_digest)
+            if args.runtime_output:
+                if result.get("input_status") not in {"pass", "missing_parameters"}:
+                    raise ContractError("输入无效，不能生成 runtime.json")
+                _write_runtime_artifact(args.runtime_output, payload, result)
     except (OSError, UnicodeError, json.JSONDecodeError, ContractError, TypeError, ValueError) as exc:
         result = {
             "schema_version": SCHEMA_VERSION,
