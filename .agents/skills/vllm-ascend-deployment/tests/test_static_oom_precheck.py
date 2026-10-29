@@ -69,6 +69,27 @@ class StaticOomPrecheckTests(unittest.TestCase):
         self.assertEqual(result["current"]["status"], "pass")
         self.assertEqual(result["recommendation"]["recommended_tp"], 1)
 
+    def test_deployment_normalized_object_keeps_serve_metadata_out_of_oom_check(self) -> None:
+        payload = copy.deepcopy(self.payload)
+        payload["schema_version"] = "vllm-ascend-deployment-input-v3"
+        payload["serve"] = {
+            "argv": [
+                "/model",
+                "--tensor-parallel-size",
+                "1",
+                "--an-option-that-static-oom-must-not-parse",
+                "value",
+            ],
+            "help_digest": "probe-digest",
+        }
+        payload["model"].update(
+            model_path="/model",
+            served_model_name="model",
+        )
+        result = precheck_module.precheck(payload)
+        self.assertEqual(result["status"], "pass")
+        self.assertEqual(result["current"]["status"], "pass")
+
     def test_weight_at_budget_is_rejected(self) -> None:
         result = self.result(**{"model.weight_bytes": 900})
         self.assertEqual(result["status"], "reject")

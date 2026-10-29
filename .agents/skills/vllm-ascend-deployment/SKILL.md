@@ -56,10 +56,13 @@ Provider 提供的 `<attempt-dir>/scripts/` 目录下。目录不存在时可以
 
 Provider 至少提供：
 
-- `model.model_path`、`model.served_model_name`；
+- ordinary 模式的模型路径、served model name 和其它 vLLM 启动值统一放在
+  `serve.argv`；`model.config_path` 仅可选地覆盖 config 校验路径；
 - `resources.visible_devices`、`resources.port_candidates`，可选 `preferred_port`；
-- 可选 `runtime.tp`、`runtime.dp`、`runtime.max_num_seqs` 和
-  `runtime.max_num_batched_tokens`；缺少 TP 时进入最小 TP 推荐；
+- ordinary 模式必须由 agent 根据最终 `vllm serve` 命令组装 `serve.argv`，并交给
+  `scripts/input_contract.py` 与 probe 生成的 `vllm-serve-help-all.txt` 一起校验；
+- `serve.argv` 的第一项是模型路径，TP、DP、mns、mnbt 和其它 vLLM 启动参数都从该数组
+  提取；缺少 TP 时进入最小 TP 推荐；
 - 可选 `service.backend`、`service.endpoint` 和 `service.tokenizer`；缺省时分别为
   `vllm`、`/v1/chat/completions` 和模型路径；
 - PD 模式额外提供 `deployment.mode`、`deployment.connector` 以及 `pd.prefill`、
@@ -76,18 +79,24 @@ Provider 至少提供：
    生成唯一的环境、sandbox、`vllm serve --help` 和 `vllm bench serve --help` 外置文件；
    只在内存中保留继续执行所需的摘要。probe 失败时记录失败阶段和错误，清理后走统一的最终
    报告写出路径。
-2. **输入校验。** ordinary 调用 `scripts/input_contract.py`；PD 调用
-   `scripts/pd_input_contract.py`。规范化结果只保存在内存；必要时把
-   原始 stdout 临时写入 `.work/`。读取 `config.json` 的原始字节只进行一次，同时完成解析
-   和 SHA256。缺少 TP 时保留规范化对象，交给静态 OOM 推荐。
+2. **输入校验。** probe 成功后，agent 根据最终 ordinary `vllm serve` argv 组装 JSON，调用
+   `scripts/input_contract.py --input <deployment-input.json> --serve-help-file
+   <vllm-serve-help-all.txt>`。脚本先验证每个 option 是否存在于同一份 help artifact，
+   普通 option 的 value 不在 input-contract 校验范围内，再对 TP、DP、mns、mnbt 等硬约束
+   执行原有检查；PD 继续调用
+   `scripts/pd_input_contract.py`。规范化结果只保存在内存；必要时把原始 stdout 临时写入
+   `.work/`。读取 `config.json` 的原始字节只进行一次，同时完成解析和 SHA256。缺少 TP 时
+   保留规范化对象，交给静态 OOM 推荐。
 3. **静态 OOM。** ordinary 调用 `scripts/static_oom_precheck.py`；PD 调用
    `scripts/pd_static_oom_precheck.py`，分别检查 Prefill 和 Decode。两侧都通过才继续；
    未指定角色 TP 时，在各自设备池中选择最小可行 TP。输入/输出如需落盘只能写入
    `.work/static_oom/`，每个 attempt 只执行一次。
 4. **TP 决策。** 推荐阶段不启动服务、不占用 NPU 或端口。得到可行最小 TP 后，使用
-   `input_contract.py --resolve-tp <tp> --resolution-source static_oom` 仅对已缓存的
+   `input_contract.py --resolve-tp <tp> --resolution-source static_oom --input -` 仅对已缓存的
    normalized object 做轻量约束检查；不得再次执行完整输入校验、重新读取 `config.json` 或
-   调用 OOM 预检。把最终 TP 写入内存中的 `launch.parameters`，复用原有静态 OOM 结果。
+   help 文件，或调用 OOM 预检。除更新内存中的 `runtime.tp` 外，同时把推荐的
+   `--tensor-parallel-size` 写回 `serve.argv`，再把最终 TP 写入内存中的
+   `launch.parameters`，复用原有静态 OOM 结果。
 5. **资源检查。** 复用 probe 已验证的端口探测工具和同一执行上下文，检查 Provider 可见
    NPU 和端口。用户指定了可见设备或端口时，只能在指定范围内选择；未指定时，从探测到的
    空闲设备和端口候选中选择。把实际选中的设备和端口写入内存中的 `resources`。

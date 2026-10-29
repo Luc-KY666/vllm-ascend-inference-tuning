@@ -11,7 +11,7 @@ from typing import Any
 
 from input_contract import (
     DEFAULTS,
-    SCHEMA_VERSION,
+    PD_SCHEMA_VERSION as SCHEMA_VERSION,
     _config_summary,
     _config_with_digest,
     _device_ids,

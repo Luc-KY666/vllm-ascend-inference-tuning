@@ -1,77 +1,179 @@
 # 部署输入契约
 
-Provider 输入由 `scripts/input_contract.py` 一次规范化。脚本只返回 stdout JSON，不创建
-目录、不写 `deployment.json`，agent 将返回对象保存在内存中，供静态 OOM、TP 决策和服务
-启动复用，避免阶段之间重复读写。
+ordinary deployment 的 Provider 输入由 agent 根据最终的 `vllm serve` 启动命令组装为
+JSON，再由 `scripts/input_contract.py` 一次规范化。脚本只返回 stdout JSON，不创建目录、
+不写部署报告；规范化结果保存在内存中，供静态 OOM、TP 决策和服务启动复用。
 
-部署接口可选声明 `service.backend`、`service.endpoint` 和 `service.tokenizer`；缺省值分别为
-`vllm`、`/v1/chat/completions` 和模型路径。部署完成后只把最终接口写入报告的 `service`，
-供 benchmark 直接复用。
+## 调用方式
 
-## Provider 输入
+probe 阶段必须先生成当前执行上下文的 `vllm-serve-help-all.txt`。输入校验使用同一份
+artifact，不重新执行 `vllm serve --help`：
 
 ```text
 python <skill-root>/scripts/input_contract.py \
-  --model-path /absolute/model/path \
-  --served-model-name model-name \
-  --visible-devices 0 1 \
-  --port-candidates 8117 8118 \
-  --preferred-port 8117 \
-  --attempt-dir /absolute/attempt-dir \
-  [--backend vllm --endpoint /v1/chat/completions --tokenizer /absolute/model/path] \
-  [runtime options]
+  --input /absolute/attempt-dir/deployment-input.json \
+  --serve-help-file /absolute/attempt-dir/vllm-serve-help-all.txt
 ```
 
-`--config-path`、`--tp`、`--dp`、`--max-num-seqs`、`--max-num-batched-tokens`、
-`--gpu-memory-utilization`、`--min-required-context-len`、`--max-model-len`、`--block-size`、
-`--dtype`、`--quantization`、`--extra-arg`、`--card-memory-bytes`、`--device-count`、
-`--max-tp-dp` 和 `--port` 为可选字段。`attempt-dir` 只作为报告和外置 artifact 的目标
-位置校验，不由脚本创建。
-
-缺少 `tp` 时保持 `null` 并返回 `input_status=missing_parameters`；其它默认值写入
-`resolution.defaulted_fields`。`pass` 表示输入完整，`invalid` 表示硬约束失败。配置文件
-原始字节只读取一次，同时完成 JSON 解析和 SHA256 计算；返回对象只携带静态 OOM 所需的
-架构摘要，不复制完整配置文本。
-
-## TP 解析
-
-静态 OOM 返回推荐值后，agent 在内存中调用：
-
-```python
-updated = resolve_recommended_tp(normalized, recommended_tp, "static_oom")
-```
-
-或通过 stdin CLI：
+`--input -` 可从 stdin 读取 JSON。TP 推荐回写使用已经规范化的 JSON，从 stdin 读取，不
+需要再次传 help 文件：
 
 ```text
 python <skill-root>/scripts/input_contract.py \
   --resolve-tp <recommended-tp> \
   --resolution-source static_oom \
-  < normalized-input.json
+  --input - < normalized-input.json
 ```
 
-该命令只输出更新后的规范化对象，不读取或写入任何部署文件，也不执行静态 OOM。它只依据
-第一次校验缓存的 `allowed_tp`、设备数量、DP 和 attention heads 做轻量检查，不重新执行完整
-输入契约或读取 `config.json`。调用方将前后对象和 `static_oom_reused=true`、
-`recheck_performed=false` 保存在内存上下文中，复用原有 OOM 结果；最终报告只在
-`launch.parameters` 中写入解析后的 TP。
+旧的 `--model-path`、`--tp`、`--dp`、`--extra-arg` 等逐项 CLI 不再是 ordinary 合同。
 
-## PD 模式扩展
+## JSON 输入
 
-当 `deployment.mode=single_node_pd` 时，调用 `scripts/pd_input_contract.py`，输入在
-普通 Provider 字段之外增加 P/D 设备池和端口：
+`serve.argv` 是 `vllm serve` 之后的完整 argv，不包含 `vllm` 和 `serve`。第一项必须是
+模型路径 positional 参数；后续每一项必须是 help 文件中声明的 option 或其 value。
 
 ```json
 {
-  "deployment": {"mode": "single_node_pd", "connector": "MooncakeConnectorV1"},
-  "pd": {
-    "prefill": {"devices": [0, 1], "api_port": 18080, "kv_port": 30000},
-    "decode": {"devices": [2, 3], "api_port": 18081, "kv_port": 30200},
-    "proxy": {"port": 18000}
+  "serve": {
+    "argv": [
+      "/absolute/model/path",
+      "--served-model-name", "qwen3-30b-a3b",
+      "--tensor-parallel-size", "2",
+      "--data-parallel-size", "1",
+      "--max-num-seqs", "32",
+      "--max-num-batched-tokens", "4096",
+      "--gpu-memory-utilization", "0.95",
+      "--enable-expert-parallel",
+      "--distributed-executor-backend", "mp",
+      "--no-enable-prefix-caching",
+      "--async-scheduling",
+      "--compilation-config", "{\"cudagraph_mode\":\"FULL_DECODE_ONLY\"}",
+      "--additional-config", "{\"enable_flashcomm1\":true,\"weight_nz_mode\":2}"
+    ]
+  },
+  "model": {
+    "config_path": "/absolute/model/path/config.json"
+  },
+  "runtime": {
+    "min_required_context_len": 4096,
+    "official_min_tp": 1
+  },
+  "resources": {
+    "visible_devices": ["0", "1"],
+    "port_candidates": [8117, 8118],
+    "preferred_port": 8117
+  },
+  "service": {},
+  "outputs": {
+    "attempt_dir": "/absolute/attempt-dir"
   }
 }
 ```
 
-P/D 设备池必须互不重叠且属于 `resources.visible_devices`；API、KV、Proxy 和池化
-控制端口必须唯一。未指定角色 TP 时，由 PD 静态 OOM 阶段在该角色设备池中选择
-最小可行 TP，再按设备池顺序选择对应设备。
+模型路径、served model name、TP、DP、mns、mnbt、显存比例、dtype、quantization、block
+size、max model length、tokenizer 和 port 等启动值必须来自 `serve.argv`。`runtime` 只
+携带没有直接对应 vLLM 启动 flag 的校验元数据，例如 `allowed_tp`、`official_min_tp` 和
+`min_required_context_len`；不得在 `runtime` 中重复提供由 `serve.argv` 派生的字段。
+
+`--config` 和 `--model` 第一版禁止使用，因为它们会把实际启动参数隐藏在第二个文件或
+第二个模型来源中，input contract 无法保证命令与校验事实一致。
+
+## Help 参数检查
+
+脚本从 probe artifact 中解析 option 声明和短别名。每个 `serve.argv` option 必须存在于
+该文件，例如 `--tensor-parallel-size`、`-tp`、`--enable-expert-parallel` 和
+`--no-enable-prefix-caching`。普通 option 的 value 不在 input-contract 的校验范围内；
+只要 option 名称存在，就不会根据其 value 做类型、枚举、JSON 或业务语义判断。模型路径仍
+必须是第一项 positional token，隐藏参数来源 `--config` 和 `--model` 仍会被拒绝。
+
+长 option 的下划线拼写会在校验时规范化为连字符，例如
+`--distributed_executor_backend` 等价于 help 中的 `--distributed-executor-backend`；输出的
+`serve.argv` 保留 agent 提供的原始拼写。
+
+支持 `--flag=value` 形式。对于硬约束参数，脚本只提取其相邻 value 并执行原有约束；其它
+option 的 value 原样留在 `serve.argv`，具体语义仍由服务启动阶段负责。
+
+help 文件必须可读、包含 `usage: vllm serve` 和至少一个 option 声明。规范化结果只记录
+其 SHA256，不复制 help 正文。
+
+## 硬约束和规范化字段
+
+以下字段从真实 vLLM flag 提取到 `runtime`：
+
+| vLLM flag | normalized 字段 |
+| --- | --- |
+| `--tensor-parallel-size`, `-tp` | `runtime.tp` |
+| `--data-parallel-size`, `-dp` | `runtime.dp` |
+| `--max-num-seqs` | `runtime.max_num_seqs` |
+| `--max-num-batched-tokens` | `runtime.max_num_batched_tokens` |
+| `--gpu-memory-utilization` | `runtime.gpu_memory_utilization` |
+| `--max-model-len` | `runtime.max_model_len` |
+| `--block-size` | `runtime.block_size` |
+| `--dtype` | `runtime.dtype` |
+| `--quantization`, `-q` | `runtime.quantization` |
+
+保留原有硬约束：
+
+- `tp`、`dp`、`max_num_seqs`、`max_num_batched_tokens` 和 `block_size` 为正整数，且
+  `0 < gpu_memory_utilization <= 1`；
+- `max_num_batched_tokens >= max_num_seqs`；
+- `tp * dp` 不超过可见设备数或 `resources.max_tp_dp`；
+- `num_attention_heads` 能被 TP 整除；
+- `allowed_tp`、`official_min_tp`、设备 ID 和端口候选的格式与归属；
+- `preferred_port`、实际 port 必须属于 `port_candidates`；
+- `outputs.attempt_dir` 必须是绝对路径。
+
+`max_model_len` 允许 vLLM 支持的 `auto`、`-1` 或人类可读后缀，`dtype` 和
+`quantization` 也不在 input-contract 中做类型或 choices 判断；这些值只要对应 option
+存在就原样保留。
+
+缺少 TP 时保留 `runtime.tp=null` 并返回 `input_status=missing_parameters`，交给静态 OOM
+阶段推荐最小 TP。缺少 DP、mns 或 mnbt 时继续沿用原有默认值和 `missing_parameters` 状态：
+
+```text
+dp=1, max_num_seqs=32, max_num_batched_tokens=4096,
+gpu_memory_utilization=0.9, min_required_context_len=4096, block_size=128
+```
+
+## 模型 config 校验
+
+模型目录必须可读；`config.json` 必须存在、可读、能解析为 JSON object。原始字节只读取
+一次，同时计算 SHA256 和配置摘要。摘要保留 static OOM 所需的架构字段，包括
+`hidden_size`、`num_hidden_layers`、`num_attention_heads`、`num_key_value_heads`、
+`head_dim`、`vocab_size`、`intermediate_size`、`num_experts`、`torch_dtype`、
+`tie_word_embeddings` 和 `has_quantization_config`；存在 `text_config` 时使用其覆盖值。
+
+## 规范化输出
+
+输出 schema 升级为 `vllm-ascend-deployment-input-v3`，继续包含 `model`、`runtime`、
+`service`、`resources`、`outputs`、`resolution` 和 `diagnostics`，并新增：
+
+```json
+{
+  "serve": {
+    "argv": [],
+    "help_digest": "sha256..."
+  }
+}
+```
+
+`runtime` 可直接交给 ordinary static OOM；原始 argv 和 help 正文不需要再次写入临时阶段
+文件。
+
+## TP 解析
+
+静态 OOM 返回推荐值后，调用方只对已缓存对象执行轻量回写：
+
+```python
+updated = resolve_recommended_tp(normalized, recommended_tp, "static_oom")
+```
+
+该操作只检查缓存的 `allowed_tp`、设备数量、DP、`max_tp_dp` 和 attention heads，不重读
+config、不重读 help、不再次执行完整输入校验。它将 `runtime.tp` 更新为推荐值，并在
+`serve.argv` 中追加或更新 `--tensor-parallel-size <tp>`，供后续服务启动直接复用。
+
+## PD 模式
+
+`deployment.mode=single_node_pd` 仍调用 `scripts/pd_input_contract.py`，本次不迁移 PD
+角色命令。P/D 设备池、端口唯一性和角色 TP 规则见
+[`pd-deployment.md`](pd-deployment.md)。
