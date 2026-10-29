@@ -159,7 +159,11 @@ OOM 证据保留在外部日志或进程 artifact 中，不写入报告。未找
 
 ## 生命周期和清理
 
-- 路径 A 的服务由部署/provider 合同决定清理时机；当前 skill 至少记录清理结果。
+- 路径 A 的服务由当前 benchmark attempt 负责最终生命周期收尾。只要本次 attempt 曾启动过
+  服务，`vllm bench serve` 返回后必须立即停止该服务（包括 ordinary/PD 的全部关联进程）并
+  释放本次选择的设备、端口和其它服务资源；不得依赖 shell 退出、部署 provider 或调用方之后
+  再清理。正式压测未开始、部署报告失败、服务验收失败、OOM、请求不完整和命令异常同样适用，
+  只要已经启动过进程就必须执行这次清理。
 - 路径 B 的服务不由当前 skill 停止或修改。
 - 清理失败写入 `failure.stage=cleanup`、`failure.type=cleanup_failed` 和原因，但不把已完成
   的性能结果写入额外的清理区块。

@@ -61,8 +61,11 @@ Provider 选择以下一种服务路径，并同时提供公共负载输入。
 benchmark 只能读取该文件作为路径 A 的部署事实，不能自行拼装或替代该报告。只接受部署报告
 `status=success`；从 `deployment_report.model`、`deployment_report.resources`、
 `deployment_report.service` 和 `deployment_report.launch` 读取模型、实际设备/端口、接口和启动
-参数。部署报告缺失、schema 校验失败或状态非 `success` 时立即记录 benchmark 失败并退出，不执行
-正式压测。
+参数。路径 A 的服务由本次 benchmark attempt 负责生命周期收尾：只要本次尝试启动过服务，
+benchmark 就必须在正式压测命令返回后停止该服务并释放其设备、端口和关联进程；不得把停止动作
+留给调用方、shell 退出或 deployment/provider 的隐含约定。部署报告缺失、schema 校验失败或
+状态非 `success` 时立即记录 benchmark 失败并退出，不执行正式压测，但仍须清理已经启动的
+路径 A 服务。
 
 ### 路径 B：Provider 已提供部署好的服务
 
@@ -137,9 +140,10 @@ probe 要求提权或执行上下文为 `elevated` 时，服务验收、数据�
 6. 正式请求阶段发生 OOM、请求不完整、指标缺失或 raw result 无法归属当前命令时，记录失败
    阶段和原因；不可信性能字段保持 `null`。NPU 或端口不可用时立即停止、清理并退出；其他
    明确瞬态故障最多在同一 attempt 内修复一次，不改变冻结的模型、设备、端口或负载参数。
-7. 无论成功、输入无效、CLI 不兼容、服务失败、请求不完整、OOM 或清理失败，都追加错误，
-   删除 `.work/`，组装最终 v3 对象并只写出一次 `benchmark_report.json`；随后仅调用一次
-   `scripts/report_schema.py`。
+7. 无论成功、输入无效、CLI 不兼容、服务失败、请求不完整、OOM 或清理失败，都追加错误。
+   路径 A 必须先停止本次 attempt 启动的服务并释放资源，再删除 `.work/`、组装最终 v3 对象并
+   只写出一次 `benchmark_report.json`；随后仅调用一次 `scripts/report_schema.py`。路径 B 不得
+   由本 skill 停止或修改 Provider 已提供的服务。
 
 ## 失败边界
 
