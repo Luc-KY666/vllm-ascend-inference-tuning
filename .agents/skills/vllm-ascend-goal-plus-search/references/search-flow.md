@@ -34,9 +34,9 @@ Search 并创建新的 Search。
 ## 冻结前 clean-source 门禁
 
 每一次 `goal_plus_search_freeze_spec` 都必须先执行一次 `clean-source`，包括修复 verifier
-后的重新 freeze。检查对象是独立的 Search source，不是候选 worktree 或运行日志目录。门禁
-至少扫描以下内容，并把 source HEAD、source digest、扫描清单和结果写入 Provider 指定的
-diagnostics Evidence：
+后的重新 freeze。检查对象是独立的 Search source；候选版本和运行日志由各自生命周期处理。门禁
+至少扫描以下内容，并把 source HEAD、source digest、扫描清单和结果归档到 workspace 根目录的
+持久化 Evidence：
 
 - `git status --porcelain=v1 --untracked-files=all` 的 tracked 修改和未跟踪文件；
 - 递归出现的 `__pycache__`、`*.pyc` 和临时符号链接；
@@ -56,8 +56,8 @@ diagnostics Evidence：
 3. 每次修复后都必须重新执行完整扫描。相同问题未变化或出现新问题时直接阻塞，不循环重试；
    只有最终扫描为空且 source HEAD/digest 稳定时才继续 freeze。
 
-修复过程本身不得写入 source/worktree；修复 Evidence 必须写入
-`GOAL_PLUS_VERIFIER_DIAGNOSTICS_DIR`。该目录缺失或无法写入也属于 freeze 阻塞。
+修复 Evidence 由 Goal Plus 归档到 workspace 根目录的持久化 Evidence 目录；Main 不自行指定或
+替换该目录。Goal Plus 未提供可持久化 Evidence 目录时属于 freeze 阻塞。
 
 ## 0. 分流
 
@@ -81,8 +81,8 @@ diagnostics Evidence：
 - candidate 并发、累计预算、超时和停止条件；
 - 已注册资源池、设备组、端口、物理锁、Goal Plus 注入的 deployment/benchmark 输出目录和
   verifier 持久化存放契约；其中每个 attempt 的临时输出由
-  `GOAL_PLUS_VERIFIER_TMPDIR` 给定，持久化 Evidence 由
-  `GOAL_PLUS_VERIFIER_DIAGNOSTICS_DIR` 给定，两个目录都必须位于 source/worktree 外；
+  `GOAL_PLUS_VERIFIER_TMPDIR` 给定，workspace 根目录的持久化 Evidence 目录由 Goal Plus 创建并
+  管理，具体目录位置不由 task 或 verifier 指定；
 - 一个用于排名的 process verifier 以及 promotion verifier；
 - Search 级唯一环境 probe 及其 artifact 路径、SHA256 和执行上下文；
 - verifier artifact 的相对路径和稳定输出格式。
@@ -126,7 +126,8 @@ diagnostics Evidence：
 执行日志），并在启动、
 预检、部署、benchmark、清理和结算阶段写入带时间戳的结构化状态/心跳。日志至少包含
 `attempt_id`、`call_id`、阶段、进程身份、最近一次成功检查和错误分类；日志持久化副本及其
-摘要 hash 写入 `GOAL_PLUS_VERIFIER_DIAGNOSTICS_DIR`，不得写回 source/worktree。
+摘要 hash 由 Goal Plus 归档到 workspace 根目录的持久化 Evidence 目录。Verifier 输出必须使用
+`GOAL_PLUS_VERIFIER_TMPDIR`，不得写入被验收 workspace。
 
 Main 必须以不大于 `log_poll_interval_s` 的短周期（默认建议 `15s`）轮询该日志，同时读取
 公开 wait/recovery/status，而不是一次阻塞到 `1800s`。每次轮询都要确认：
@@ -210,9 +211,9 @@ baseline 失败、环境故障和候选失败必须分开归因。每个候选�
 verifier 必须只读候选字段和受信任的 provider 注入，并在一次 attempt 内完成：
 
 1. 读取配置、设备组、端口、锁和输出目录。
-   输出目录必须来自 `GOAL_PLUS_VERIFIER_TMPDIR`，且本次 deployment、benchmark、raw result、
-   日志、脚本和 `.work` 均不得写入 source/worktree；持久化报告和 Evidence 只能写入
-   `GOAL_PLUS_VERIFIER_DIAGNOSTICS_DIR`。
+   输出目录必须来自 `GOAL_PLUS_VERIFIER_TMPDIR`，本次 deployment、benchmark、raw result、
+   日志、脚本和 `.work` 均使用该注入目录，不得写入被验收 workspace；持久化报告和 Evidence
+   由 Goal Plus 归档到 workspace 根目录的持久化 Evidence 目录。
 2. 复用 Search 级唯一 probe，校验路径、schema、上下文和 SHA256；不得重新探测。需要
    CLI 能力或参数信息时读取 probe 保存的 help artifact，不得重新执行任何 help 命令。
 3. 调用部署 Skill 完成资源、配置、静态检查、服务启动、健康、身份和最小请求验收。
@@ -278,8 +279,8 @@ attempt 中断或客户端超时时回到上面的固定续跑循环；该循环
   有效两端样本时不得计算收益；
 - 重复/成对测量策略、离散度、设备轮换、并发争用、调度抖动等噪声说明和解释边界；
 - 所有失败候选、attempt 状态、失败分类、原因、是否可重试和未覆盖搜索空间；
-- 服务/子进程、端口、设备锁、`GOAL_PLUS_VERIFIER_TMPDIR`、
-  `GOAL_PLUS_VERIFIER_DIAGNOSTICS_DIR` 和 worktree 的清理状态，以及相关 Evidence hash；
+- 服务/子进程、端口、设备锁、`GOAL_PLUS_VERIFIER_TMPDIR`、workspace 根目录持久化 Evidence
+  目录和清理状态，以及相关 Evidence hash；
 - 明确声明：本次 Search 结果不是用户业务仓的最终 E2E 证明，仍需用户在真实业务仓、目标
   设备和正式发布方式下独立完成业务精度、部署和性能验收。
 
@@ -288,5 +289,6 @@ attempt 中断或客户端超时时回到上面的固定续跑循环；该循环
 verifier 不充分时调用 `goal_plus_search_invalidate_run` 原子阻止新规划、session、结算、
 选择和提升；停止并关闭候选后修复 verifier，使用新 run 继续。只读诊断使用公开 monitor
 snapshot；恢复状态使用 recovery status/prepare/recover 接口，不修改 Goal Plus 私有状态。
-输出目录和持久化 Evidence 遵循 Provider 输入契约；清理或修复失败时保留 source/worktree
-现场并阻塞 freeze/select/promotion；task 和 bridge 不推断其他输出路径，也不自动 reset/clean/stash。
+输出目录和持久化 Evidence 遵循 Provider 输入契约，由 Goal Plus 管理实际位置；清理或修复失败时
+保留真实现场并阻塞 freeze/select/promotion；task 和 bridge 不推断其他输出路径，也不自动
+reset/clean/stash。

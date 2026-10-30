@@ -10,6 +10,10 @@ Search 绑定的 probe 路径、SHA256、执行上下文和 shell fingerprint �
 deployment/benchmark Skill 引用这些事实。Search 绑定时，执行 Skill 以既有 artifact 完成
 probe 校验；校验失败或上下文变化时，当前 Search 进入流程定义的阻塞状态并按流程创建新的 Search。
 
+全局 probe 结果以及 verifier 的持久化 Evidence 由 Goal Plus 在 workspace 根目录创建并管理一个
+持久化 Evidence 目录；Provider 只返回由 Goal Plus 管理的目录和 artifact 索引，不为 task 暴露另一个
+持久化目录环境变量。
+
 ## 合同边界
 
 Search 建立及 Attempt 生命周期见[搜索流程](search-flow.md)。Provider 接收已冻结的 SearchSpec
@@ -31,8 +35,7 @@ Evidence 索引。
 
 1. 冻结常量：模型身份、固定部署事实、workload、指标、统计口径和 provider 合同；
 2. 候选字段：范围限定为外部 edit surface 内的部署字段和值；
-3. Provider 注入：可见资源、设备组、端口候选、物理锁、`GOAL_PLUS_VERIFIER_TMPDIR` 和
-   `GOAL_PLUS_VERIFIER_DIAGNOSTICS_DIR`；
+3. Provider 注入：可见资源、设备组、端口候选、物理锁和 `GOAL_PLUS_VERIFIER_TMPDIR`；
 4. 目标环境事实：命令行能力、模型配置、tokenizer、版本、数据类型、量化和上下文能力。
 
 第 1、3、4 类输入保持冻结；Provider 事实以受信任的 Goal Plus/provider 回执为准。
@@ -48,8 +51,7 @@ Evidence 索引。
 | 可见资源 | provider 注入 | 必须与本次设备组和资源锁一致 |
 | 端口候选 | provider 注入 | 范围限定为候选集合 |
 | 偏好端口 | provider 注入 | 必须属于候选集合 |
-| `GOAL_PLUS_VERIFIER_TMPDIR` | Goal Plus/provider 注入 | 本次 attempt 的唯一绝对临时目录，必须在 source/worktree 外 |
-| `GOAL_PLUS_VERIFIER_DIAGNOSTICS_DIR` | Goal Plus/provider 注入 | 持久化 Evidence 目录，必须在 source/worktree 外 |
+| `GOAL_PLUS_VERIFIER_TMPDIR` | Goal Plus/provider 注入 | 本次 attempt 的唯一临时目录，由 Goal Plus 管理 |
 | `runtime.<field>` | 外部候选或推荐 | 字段名和值域由 SearchSpec 提供 |
 | 资源上限 | SearchSpec/环境事实 | 由外部合同冻结 |
 
@@ -60,12 +62,12 @@ Evidence 索引。
 
 Goal Plus/provider 注入 `GOAL_PLUS_VERIFIER_TMPDIR`，作为部署和压测报告、raw result、日志、
 脚本、`.work` 及其他 attempt 文件的归档根目录。每个 attempt 使用该目录下的唯一子目录，
-各 lane 保持独立。
+各 lane 保持独立。Verifier 的这些输出必须使用该注入目录，不得写入被验收 workspace。
 
-持久化 Verifier 的脚本、报告、日志、生命周期记录和其他 Evidence 写入
-`GOAL_PLUS_VERIFIER_DIAGNOSTICS_DIR`；目录位置由 Goal Plus/provider 提供。Evidence 至少记录
-两个实际目录、文件摘要 hash，以及 verifier 结束时 worktree 无新增运行产物的结果。目录状态
-未就绪或位于 source/worktree 内时，attempt 状态记为 `error`。
+Goal Plus 在 workspace 根目录创建并管理持久化 Evidence 目录，归档全局 probe、Verifier 的脚本、
+报告、日志、生命周期记录和其他 Evidence。Evidence 至少记录两个实际目录、文件摘要 hash，以及
+verifier 的清理结果；目录位置、命名和持久化方式均由 Goal Plus 管理，目录未就绪时 attempt 状态
+记为 `error`。
 
 ## 压测输入映射
 

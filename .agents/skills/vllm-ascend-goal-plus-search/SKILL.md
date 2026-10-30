@@ -32,4 +32,7 @@ Runtime、MCP、服务控制器或搜索器。
 - preset 只冻结 workload 场景；数据集 ID/路径由 benchmark 按场景合同派生，task 不另造 dataset root。
 - Provider 注入候选参数、设备组、端口、锁和输出目录；目录隔离、Evidence 持久化及反馈字段见
   [Provider 输入契约](references/provider-contract.md)，不在入口重复展开。
+- 全局 probe 结果和 verifier Evidence 由 Goal Plus 在 workspace 根目录创建并管理持久化 Evidence
+  目录；verifier 输出使用 Goal Plus 注入的 `GOAL_PLUS_VERIFIER_TMPDIR`，不得写入被验收 workspace。
+  Evidence、临时目录和其他产物的具体位置由 Goal Plus 管理，task 不自行指定路径。
 - Search source 必须是独立、clean 的 Git 目录；不绕过设备池、lane lease、物理锁或独立 verifier。
