@@ -5,22 +5,22 @@
 
 | 输入 | 用户填写值 |
 | --- | --- |
-| `model_path` | `<模型路径>` |
-| `max_attempts` | `<最大尝试次数>` |
+| `model_path` | `/data/disk/models/Qwen3-Coder-30B-A3B-Instruct` |
+| `max_attempts` | `20` |
 | `authorized_ascend_npu_devices` | `["0", "1", "2", "3", "4", "5", "6", "7"]` |
-| `max_tp_dp` | `<TP * DP 最大值>` |
-| `tp` | `<候选值，例如 2>` |
-| `dp` | `<候选值，例如 1>` |
-| `max_num_seqs` | `<候选值，例如 16-256>` |
-| `max_num_batched_tokens` | `<候选值，例如 64-8192>` |
+| `max_tp_dp` | `4` |
+| `tp` | `2, 4` |
+| `dp` | `1, 2` |
+| `max_num_seqs` | `16-256` |
+| `max_num_batched_tokens` | `2048-32768` |
 | `enable_expert_parallel` | `true|false` |
 | `enable_prefix_caching` | `true|false` |
 | `distributed_executor_backend` | `mp|null` |
 | `async_scheduling` | `true` |
 | `compilation_config` | `{"cudagraph_mode":"NONE"}`; `{"cudagraph_mode":"FULL_DECODE_ONLY"}`; `{"cudagraph_mode":"PIECEWISE"}`; `{"cudagraph_mode":"FULL_AND_PIECEWISE"}` |
-| `num_prompts` | `<请求数>` |
-| `max_concurrency` | `<最大并发数>` |
-| `request_rate` | `<请求到达速率>` |
+| `num_prompts` | `500` |
+| `max_concurrency` | `64` |
+| `request_rate` | `4 req/s` |
 
 固定部署参数（不可调，baseline、candidate 和 promotion 必须一致）：
 

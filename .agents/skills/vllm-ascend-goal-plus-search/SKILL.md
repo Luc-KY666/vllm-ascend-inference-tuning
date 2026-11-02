@@ -5,34 +5,54 @@ description: 以 Goal Plus Provider 身份编排一次 vLLM-Ascend 部署参数�
 
 # vLLM-Ascend Goal Plus 搜索 Provider 技能
 
-本 skill 是 Goal Plus 与 vLLM-Ascend 执行 Skill 之间的桥梁：把外部调用者冻结的有界搜索
-接入 Goal、Search、candidate、Evidence 和 promotion 公开接口。它不实现第二套调度器、租约、
-Runtime、MCP、服务控制器或搜索器。
+本 skill 负责完整的 vLLM-Ascend 参数搜索流程，并把部署和压测交给对应执行 Skill。它消费
+Goal Plus 提供的 SearchSpec、状态句柄和运行时输入，不创建或管理 Goal Plus 的 task、Goal、
+FrozenSpec、run、attempt、Evidence 或输出结构；也不实现第二套调度器、租约、Runtime、MCP、
+服务控制器或搜索器。
 
 ## 入口与唯一规范来源
 
-启动时读取根 `AGENTS.md`、task 的 `goal.md`、`goal-pi.md`、`workflow.md`、`input.md`（存在时）
-和业务仓事实，再按需读取：
+启动时读取 Goal Plus 提供的当前 task/Search 合同和业务仓事实，再按需读取：
 
 - [搜索流程](references/search-flow.md)：Search 生命周期、唯一 probe/help、attempt 状态、
-  固定续跑循环、freeze 门禁、verifier 等待/恢复、Attempt 运行时与清理、selection、promotion
-  和最终审查；它是流程与 probe 规则的唯一权威来源；
-- [Provider 输入契约](references/provider-contract.md)：SearchSpec 输入映射、目录隔离、
-  artifact/Evidence 和 Provider 反馈字段的唯一权威来源；
+  固定续跑循环、freeze 流程、verifier 等待/恢复、selection、promotion 和最终审查；它是流程
+  与 probe 规则的唯一权威来源；
+- [Provider 输入契约](references/provider-contract.md)：SearchSpec 输入映射、部署/压测事实交接、
+  artifact 引用和 Provider 反馈字段的唯一权威来源；
 - `../vllm-ascend-probes/SKILL.md`、`../vllm-ascend-deployment/SKILL.md`、
   `../vllm-ascend-benchmark/SKILL.md`：环境、部署和压测的执行合同。
 
-需要工具参数、回执、幂等、恢复、失败分类或报告字段时直接查阅上述来源；task 和本桥接文件不
-复制流程细节。
+需要工具参数、回执、幂等、恢复、失败分类或报告字段时直接查阅上述来源；不在本 skill 中复制
+Goal Plus 的任务结构或存储布局。
 
 ## 桥接边界
 
 - 模型、指标、候选值、资源、预算和 workload 由外部 SearchSpec 冻结；不猜测事实或使用普通环境变量、
   旧日志、fixture 和候选自报值替代 provider 回执。
-- preset 只冻结 workload 场景；数据集 ID/路径由 benchmark 按场景合同派生，task 不另造 dataset root。
-- Provider 注入候选参数、设备组、端口、锁和输出目录；目录隔离、Evidence 持久化及反馈字段见
-  [Provider 输入契约](references/provider-contract.md)，不在入口重复展开。
-- 全局 probe 结果和 verifier Evidence 由 Goal Plus 在 workspace 根目录创建并管理持久化 Evidence
-  目录；verifier 输出使用 Goal Plus 注入的 `GOAL_PLUS_VERIFIER_TMPDIR`，不得写入被验收 workspace。
-  Evidence、临时目录和其他产物的具体位置由 Goal Plus 管理，task 不自行指定路径。
+- preset 只冻结 workload 场景；数据集 ID/路径由 benchmark 按场景合同派生，task 不另造数据来源。
+- Provider/Goal Plus 注入候选参数、设备组、端口、锁以及不透明的运行时输出句柄；skill 将这些
+  输入原样交给 verifier、deployment 和 benchmark，不创建目录、不选择路径、不定义目录层级。
+- Goal、Search、FrozenSpec、run、candidate、attempt、Evidence 以及所有输出的命名、生命周期和
+  持久化方式由 Goal Plus 管理；skill 只使用公开接口返回的 ID、状态和 artifact 引用。
 - Search source 必须是独立、clean 的 Git 目录；不绕过设备池、lane lease、物理锁或独立 verifier。
+
+## 搜索主流程与执行 Skill 交接
+
+完整流程由 [搜索流程](references/search-flow.md) 定义，主线只做以下工作：
+
+1. 消费 Goal Plus 提供的 SearchSpec、资源/锁句柄、唯一 probe/help artifact 引用和输出句柄；
+2. 完成 triage、baseline、freeze、candidate 规划、独立 verifier、结果结算、selection、promotion
+   和 final review；
+3. 在每个 verifier attempt 中调用 [`vllm-ascend-deployment`](../vllm-ascend-deployment/SKILL.md)，
+   传入冻结的模型、候选部署参数、Provider 资源事实、Search 级 probe/help 引用和 Goal Plus
+   提供的运行时输出句柄，接收部署报告与服务事实；
+4. 将部署返回的服务地址、served model identity、tokenizer 和部署报告交给
+   [`vllm-ascend-benchmark`](../vllm-ascend-benchmark/SKILL.md)，在同一已启动服务上按冻结 workload
+   至少执行 3 次正式 benchmark，接收每次官方报告、raw result 引用和唯一评分字段，并计算其
+   算术平均值作为该配置的搜索评分；
+5. 将部署/压测结果和清理状态交回 Goal Plus 公开接口，由 Goal Plus 完成状态、Evidence、选择、
+   提升和最终报告的持久化。任一 verifier 失败时，先保留当次 serve/benchmark 日志和最后状态
+   的 Evidence 引用，再执行服务清理；完整日志不写入最终报告正文。
+
+上述流程不得创建或拼接 Goal Plus 的任务、freeze、run、attempt 或输出路径；deployment 和
+benchmark 也只能使用 Goal Plus/provider 注入的输出句柄。

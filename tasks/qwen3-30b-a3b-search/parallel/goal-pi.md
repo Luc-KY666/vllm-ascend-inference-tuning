@@ -45,5 +45,6 @@ baseline origin 固定使用以下部署参数：`--trust-remote-code`、`--max-
 默认值、benchmark mode、数据集适配器、生成参数和百分位配置由
 `vllm-ascend-benchmark` 及其 references 指定，不由 task 猜测或覆写。
 
-并行模式使用 `max_parallel=2`；每批包含两个 candidate，`max_attempts` 为整个 Search
-的共享候选预算。
+并行模式使用 `max_parallel=2`；每批包含两个 candidate。用户输入的 `max_attempts` 是并发
+搜索的共享预算，只有获得有效结果的搜索才消耗一个预算单位；没有得到结果的无效搜索不占用
+该预算。

@@ -6,8 +6,8 @@
 
 ## 参与角色
 
-- Main：读取 task 的 `goal.md`、`goal-pi.md`、`workflow.md`、`input.md`，准备 origin，
-  冻结 SearchSpec、独立 verifier、reference、edit surface 和必要依赖。
+- Main：读取 Goal Plus 提供的当前 task/Search 合同，准备 origin，冻结 SearchSpec、独立 verifier、
+  reference、edit surface 和必要依赖。
 - worker：在被授权的 edit surface 内提出候选字段和可检验假设，不启动验收服务，不修改
   workload、verifier、阈值、资源或全局排名。
 - 独立 verifier：执行预检、部署、服务身份验收、固定 workload、官方测量、证据导出和清理，
@@ -18,9 +18,9 @@
 执行的诊断工作。
 
 一次 Search 只建立一份 Search 级环境 probe。probe 必须在首个 origin/baseline verifier
-之前完成，并将 `environment_probe.json`、sandbox 证据和两个完整 vLLM help artifact 的
-路径与 SHA256 写入冻结合同。后续所有 deployment、benchmark、candidate 和 promotion
-attempt 只能读取这份 artifact；不得再次调用环境 probe、CANN/sandbox/端口发现或 vLLM
+之前完成，并将 probe、sandbox 证据和两个完整 vLLM help artifact 的不透明引用与 SHA256
+写入冻结合同。后续所有 deployment、benchmark、candidate 和 promotion attempt 只能读取这份
+artifact；不得再次调用环境 probe、CANN/sandbox/端口发现或 vLLM
 help。任何需要确认 `vllm serve` 或 `vllm bench serve` 参数、能力或默认语义的步骤，都
 必须直接查阅首次 probe 的 `vllm-serve-help-all.txt` 或 `bench-serve-help-all.txt`，不得执行
 `vllm serve --help`、`vllm serve --help=all`、`vllm bench serve --help`、
@@ -30,34 +30,6 @@ Search 并创建新的 Search。
 如果 deployment 或 benchmark Skill 的普通流程要求在 attempt 内“调用 probe 一次”，该要求
 在 Search 绑定上下文中由 Provider 注入的 Search 级 artifact 满足；verifier 必须跳过该次
 本地调用，改为校验并引用既有 artifact，不得按 attempt 重新执行 probe。
-
-## 冻结前 clean-source 门禁
-
-每一次 `goal_plus_search_freeze_spec` 都必须先执行一次 `clean-source`，包括修复 verifier
-后的重新 freeze。检查对象是独立的 Search source；候选版本和运行日志由各自生命周期处理。门禁
-至少扫描以下内容，并把 source HEAD、source digest、扫描清单和结果归档到 workspace 根目录的
-持久化 Evidence：
-
-- `git status --porcelain=v1 --untracked-files=all` 的 tracked 修改和未跟踪文件；
-- 递归出现的 `__pycache__`、`*.pyc` 和临时符号链接；
-- `.git/MERGE_HEAD`、`CHERRY_PICK_HEAD`、`REVERT_HEAD`、`BISECT_LOG`、`rebase-merge/`、
-  `rebase-apply/`、`sequencer/`、`index.lock` 等未完成 Git 操作；
-- source 目录中不属于冻结合同的临时链接、临时文件和其他未登记生成物。
-
-门禁失败时不得直接生成 FrozenSpec。尤其是 source 中发现未跟踪 `*.pyc` 或
-`__pycache__` 时，当前 freeze 必须拒绝；它们不能因被 `.gitignore` 忽略或看似由本轮生成而被
-当作 clean。先按以下分级策略修复，再完整重扫：
-
-1. 只有能证明由本轮生成、且位于预先登记 allowlist 的 `__pycache__`、`*.pyc` 或临时链接
-   才能自动清理；修复前保存路径和摘要，修复后记录动作、结果和新摘要。清理后必须重新
-   执行 freeze 前的完整扫描，不能在同一个被拒绝的 freeze 中继续。
-2. 未跟踪业务文件、tracked 修改、未知链接和未完成 Git 操作必须保留现场，记录 owner、
-   原因和恢复要求；不得自动执行 `reset`、`clean`、`stash`、Git abort 或覆盖文件。
-3. 每次修复后都必须重新执行完整扫描。相同问题未变化或出现新问题时直接阻塞，不循环重试；
-   只有最终扫描为空且 source HEAD/digest 稳定时才继续 freeze。
-
-修复 Evidence 由 Goal Plus 归档到 workspace 根目录的持久化 Evidence 目录；Main 不自行指定或
-替换该目录。Goal Plus 未提供可持久化 Evidence 目录时属于 freeze 阻塞。
 
 ## 0. 分流
 
@@ -76,16 +48,16 @@ Search 并创建新的 Search。
 调用 `goal_plus_search_freeze_spec`，至少冻结：
 
 - 当前 active Goal、workspace provider、目标和唯一指标字段及方向；
-- 已通过 clean-source 的 source path、source HEAD/digest、candidate edit surface 和不可修改的
+- Goal Plus 已确认的 source reference、source HEAD/digest、candidate edit surface 和不可修改的
   verifier/workload 文件；
 - candidate 并发、累计预算、超时和停止条件；
-- 已注册资源池、设备组、端口、物理锁、Goal Plus 注入的 deployment/benchmark 输出目录和
-  verifier 持久化存放契约；其中每个 attempt 的临时输出由
-  `GOAL_PLUS_VERIFIER_TMPDIR` 给定，workspace 根目录的持久化 Evidence 目录由 Goal Plus 创建并
-  管理，具体目录位置不由 task 或 verifier 指定；
+- 每个配置的 benchmark 重复次数（不得少于 3 次）、固定 workload/seed、唯一评分字段的聚合
+  公式和单次失败的结算规则；
+- 已注册资源池、设备组、端口、物理锁，以及 Goal Plus 注入的 deployment/benchmark 输出句柄和
+  verifier Evidence 句柄；句柄的实际存储位置、命名和层级不由 task、verifier 或本 skill 指定；
 - 一个用于排名的 process verifier 以及 promotion verifier；
-- Search 级唯一环境 probe 及其 artifact 路径、SHA256 和执行上下文；
-- verifier artifact 的相对路径和稳定输出格式。
+- Search 级唯一环境 probe 及其 artifact 引用、SHA256 和执行上下文；
+- verifier artifact 的不透明引用和稳定输出格式。
 
 冻结前用公开模型接口确认 worker 模型，并用隔离样本检查 verifier 对
 `valid`、`invalid`、`error` 的判定。冻结失败不生成 FrozenSpec。
@@ -122,12 +94,12 @@ Search 并创建新的 Search。
 客户端默认超时代替该预算。这个预算是允许 Verifier 完成的总时间，不是把一次短查询超时当作
 取消信号；到达预算前不得取消、重试或重新派发同一 attempt。
 
-每个 attempt 必须在 `GOAL_PLUS_VERIFIER_TMPDIR` 建立唯一的 `verifier.log`（或等价的 Verifier
+每个 attempt 必须使用 Goal Plus 注入的运行时输出句柄保存唯一的 `verifier.log`（或等价的 Verifier
 执行日志），并在启动、
 预检、部署、benchmark、清理和结算阶段写入带时间戳的结构化状态/心跳。日志至少包含
 `attempt_id`、`call_id`、阶段、进程身份、最近一次成功检查和错误分类；日志持久化副本及其
-摘要 hash 由 Goal Plus 归档到 workspace 根目录的持久化 Evidence 目录。Verifier 输出必须使用
-`GOAL_PLUS_VERIFIER_TMPDIR`，不得写入被验收 workspace。
+摘要 hash 由 Goal Plus 归档。Verifier 输出必须使用 Goal Plus 注入的运行时输出句柄，不得写入
+被验收 workspace，也不得自行创建替代输出位置。
 
 Main 必须以不大于 `log_poll_interval_s` 的短周期（默认建议 `15s`）轮询该日志，同时读取
 公开 wait/recovery/status，而不是一次阻塞到 `1800s`。每次轮询都要确认：
@@ -140,6 +112,11 @@ Main 必须以不大于 `log_poll_interval_s` 的短周期（默认建议 `15s`�
 健康执行时，立即停止等待并进入 `settling -> error` 收尾；保留日志和最后状态，不再消耗剩余
 等待预算。仅仅没有新的 benchmark 进度但心跳、进程和公开状态均健康时继续观察。日志轮询只
 用于发现 liveness/错误，最终 `valid|invalid|error` 仍以公开 Verifier 结果和收尾 Evidence 为准。
+
+Verifier 在 deployment 或 benchmark 任一阶段失败时，必须在清理服务前保留当次可用的 serve
+日志、benchmark 日志、wrapper 日志和最后状态，并把它们交给 Goal Plus 的 Evidence 接口。日志
+正文不写入 Search 或部署/压测最终报告；只保留由 Goal Plus 管理的 Evidence 引用和摘要。若某类
+日志尚未产生，必须记录其缺失，不得用其它日志伪造替代。
 
 ### Attempt 运行时与清理
 
@@ -201,26 +178,30 @@ attempt；不得调用新的 `session_run`、steering、停止、select 或 prom
 | --- | --- | --- |
 | baseline | 推荐值或冻结默认 | 建立可比较 origin |
 | candidate | edit surface 内的候选值 | 搜索候选空间 |
-| promotion | 获选值，可使用新 attempt 目录 | 独立复验与交付 |
+| promotion | 获选值，由 Goal Plus 分配独立 attempt 句柄 | 独立复验与交付 |
 
-baseline 失败、环境故障和候选失败必须分开归因。每个候选配置只提交一次；重复测量只能作为
-诊断，不能重试到通过。
+baseline 失败、环境故障和候选失败必须分开归因。每个候选配置只提交一次；同一配置的至少 3 次
+benchmark 是冻结评价合同的一部分，必须全部保留并参与聚合，不能通过额外重跑或挑选样本直到通过。
 
 ## 5. 独立 verifier 与结算
 
 verifier 必须只读候选字段和受信任的 provider 注入，并在一次 attempt 内完成：
 
-1. 读取配置、设备组、端口、锁和输出目录。
-   输出目录必须来自 `GOAL_PLUS_VERIFIER_TMPDIR`，本次 deployment、benchmark、raw result、
-   日志、脚本和 `.work` 均使用该注入目录，不得写入被验收 workspace；持久化报告和 Evidence
-   由 Goal Plus 归档到 workspace 根目录的持久化 Evidence 目录。
+1. 读取配置、设备组、端口、锁和 Goal Plus 注入的输出句柄。将该句柄原样传给 deployment 和
+   benchmark；本次报告、raw result、日志、脚本和临时数据不得写入被验收 workspace，也不得
+   另行创建输出位置。
 2. 复用 Search 级唯一 probe，校验路径、schema、上下文和 SHA256；不得重新探测。需要
    CLI 能力或参数信息时读取 probe 保存的 help artifact，不得重新执行任何 help 命令。
-3. 调用部署 Skill 完成资源、配置、静态检查、服务启动、健康、身份和最小请求验收。
-4. 将部署交还的服务事实传给压测 Skill，执行冻结 workload 和官方命令。
-5. 从官方 raw result 读取唯一评分字段，输出最后一行 JSON，包含字段、方向、attempt 身份
-   和 `outcome=valid|invalid|error`。
-6. 导出部署/压测 artifact，停止本次服务并核对资源清理。
+3. 调用部署 Skill 完成资源、配置、静态检查、服务启动、健康、身份和最小请求验收；服务保持
+   运行，不因重复 benchmark 重启。
+4. 将部署交还的服务事实传给压测 Skill，在同一服务实例上按冻结 workload 顺序执行至少 3 次
+   正式 benchmark；每次使用相同 workload、seed、请求合同和统计口径，分别核验 raw result。
+5. 从每次官方 raw result 读取唯一评分字段以及 Search 合同要求交付的其它官方性能字段，只有
+   达到冻结重复次数且全部样本有效时才按字段分别计算算术平均值。唯一评分字段的平均值作为
+   该配置的搜索评分，同时保留每次样本的身份、指标和 Evidence 引用；任一样本失败时按冻结
+   规则结算为 `invalid` 或 `error`，不得静默减少样本数。
+6. 导出部署/压测 artifact，停止本次服务并核对资源清理；无论成功或失败，都先保留 serve/
+   benchmark 日志再清理。
 
 部署或压测的长阶段必须由 wrapper 记录心跳并由 Main 持续轮询执行日志；不能只等待一个长
 客户端请求返回。Verifier 日志、公开状态和进程健康三者不一致时，以更保守的错误路径收尾，
@@ -270,8 +251,8 @@ attempt 中断或客户端超时时回到上面的固定续跑循环；该循环
 
 最终 Search report/Evidence 至少包含：
 
-- baseline 与 final 的同口径原始样本、唯一指标、seed、workload digest、重复次数、预热和
-  统计公式；baseline/final 必须使用同一比较合同，不能只给两个汇总值；
+- baseline 与 final 的同口径每轮原始样本、唯一指标、seed、workload digest、重复次数、预热和
+  统计公式，以及算术平均值；baseline/final 必须使用同一比较合同，不能只给一个未展开的汇总值；
 - baseline/final 的模型、服务和候选配置摘要和 hash，实际物理设备/lane 身份、端口、资源锁
   和服务生命周期；
 - 与指标方向一致的收益公式和代入值。最小化指标使用
@@ -279,8 +260,8 @@ attempt 中断或客户端超时时回到上面的固定续跑循环；该循环
   有效两端样本时不得计算收益；
 - 重复/成对测量策略、离散度、设备轮换、并发争用、调度抖动等噪声说明和解释边界；
 - 所有失败候选、attempt 状态、失败分类、原因、是否可重试和未覆盖搜索空间；
-- 服务/子进程、端口、设备锁、`GOAL_PLUS_VERIFIER_TMPDIR`、workspace 根目录持久化 Evidence
-  目录和清理状态，以及相关 Evidence hash；
+- verifier 失败时的 serve、benchmark 和 wrapper 日志 Evidence 引用，以及未生成日志的明确记录；
+- 服务/子进程、端口、设备锁、Goal Plus 输出句柄、清理状态以及相关 Evidence hash；
 - 明确声明：本次 Search 结果不是用户业务仓的最终 E2E 证明，仍需用户在真实业务仓、目标
   设备和正式发布方式下独立完成业务精度、部署和性能验收。
 
@@ -289,6 +270,5 @@ attempt 中断或客户端超时时回到上面的固定续跑循环；该循环
 verifier 不充分时调用 `goal_plus_search_invalidate_run` 原子阻止新规划、session、结算、
 选择和提升；停止并关闭候选后修复 verifier，使用新 run 继续。只读诊断使用公开 monitor
 snapshot；恢复状态使用 recovery status/prepare/recover 接口，不修改 Goal Plus 私有状态。
-输出目录和持久化 Evidence 遵循 Provider 输入契约，由 Goal Plus 管理实际位置；清理或修复失败时
-保留真实现场并阻塞 freeze/select/promotion；task 和 bridge 不推断其他输出路径，也不自动
-reset/clean/stash。
+输出句柄和 Evidence 遵循 Goal Plus 的公开契约；清理或修复失败时保留真实现场并阻塞
+freeze/select/promotion；task 和 bridge 不推断其他输出位置，也不自动 reset/clean/stash。

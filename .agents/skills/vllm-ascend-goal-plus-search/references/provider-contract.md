@@ -6,13 +6,12 @@ Skill 的输入，并定义 Provider 反馈给 Search 的事实结构。搜索�
 ## Probe 绑定
 
 Search 级 probe、help 输出和重复调用策略见[搜索流程](search-flow.md)。Provider 的职责是把
-Search 绑定的 probe 路径、SHA256、执行上下文和 shell fingerprint 注入每个 attempt，并让
+Search 绑定的 probe artifact 引用、SHA256、执行上下文和 shell fingerprint 注入每个 attempt，并让
 deployment/benchmark Skill 引用这些事实。Search 绑定时，执行 Skill 以既有 artifact 完成
 probe 校验；校验失败或上下文变化时，当前 Search 进入流程定义的阻塞状态并按流程创建新的 Search。
 
-全局 probe 结果以及 verifier 的持久化 Evidence 由 Goal Plus 在 workspace 根目录创建并管理一个
-持久化 Evidence 目录；Provider 只返回由 Goal Plus 管理的目录和 artifact 索引，不为 task 暴露另一个
-持久化目录环境变量。
+全局 probe、verifier Evidence 和运行时输出均由 Goal Plus 管理。Provider 只接收或返回 Goal Plus
+提供的不透明句柄和 artifact 引用，不创建目录、不命名目录，也不为 task 暴露另一套持久化位置。
 
 ## 合同边界
 
@@ -26,8 +25,10 @@ valid attempt 的反馈由以下结构组成：部署报告的 schema 标识为
 `vllm-ascend-deployment-report-v3`，服务事实来自 `model`、`resources`、`service`、`launch`；
 压测报告的 schema 标识为 `vllm-ascend-benchmark-report-v3`，负载和结果来自 `model`、`load`、
 `dataset`、`arrival`、`parameters`、`result`。Search 的唯一评分字段由 SearchSpec 指定，
-直接映射到 `result` 中的官方指标百分位字段；报告主体承载官方字段，raw result 和摘要归入
-Evidence 索引。
+直接映射到 `result` 中的官方指标百分位字段；报告主体承载单轮官方字段，raw result 和摘要归入
+Evidence 索引。Search verifier 至少收集 3 个有效单轮值，并对唯一评分字段及 Search 合同要求
+交付的其它官方性能字段逐字段取算术平均；唯一评分字段的平均值是 Search 层评分，不改变
+deployment/benchmark 公共报告 schema。
 
 ## 输入来源
 
@@ -51,35 +52,31 @@ Evidence 索引。
 | 可见资源 | provider 注入 | 必须与本次设备组和资源锁一致 |
 | 端口候选 | provider 注入 | 范围限定为候选集合 |
 | 偏好端口 | provider 注入 | 必须属于候选集合 |
-| `GOAL_PLUS_VERIFIER_TMPDIR` | Goal Plus/provider 注入 | 本次 attempt 的唯一临时目录，由 Goal Plus 管理 |
+| `GOAL_PLUS_VERIFIER_TMPDIR` | Goal Plus/provider 注入 | 本次 verifier 使用的运行时输出句柄，原样透传 |
 | `runtime.<field>` | 外部候选或推荐 | 字段名和值域由 SearchSpec 提供 |
 | 资源上限 | SearchSpec/环境事实 | 由外部合同冻结 |
 
 部署成功后向 Provider 交还选定资源、服务地址、服务进程、服务身份和部署报告；压测路径
 沿用这些事实完成复核和测量。
 
-## 输出与持久化
+## 输出交接
 
-Goal Plus/provider 注入 `GOAL_PLUS_VERIFIER_TMPDIR`，作为部署和压测报告、raw result、日志、
-脚本、`.work` 及其他 attempt 文件的归档根目录。每个 attempt 使用该目录下的唯一子目录，
-各 lane 保持独立。Verifier 的这些输出必须使用该注入目录，不得写入被验收 workspace。
-
-Goal Plus 在 workspace 根目录创建并管理持久化 Evidence 目录，归档全局 probe、Verifier 的脚本、
-报告、日志、生命周期记录和其他 Evidence。Evidence 至少记录两个实际目录、文件摘要 hash，以及
-verifier 的清理结果；目录位置、命名和持久化方式均由 Goal Plus 管理，目录未就绪时 attempt 状态
-记为 `error`。
+Verifier 必须使用 Goal Plus/provider 注入的运行时输出句柄，并将 deployment、benchmark 返回的
+报告、raw result、日志和 Evidence 引用交还公开接口。Verifier 不得在被验收 workspace 创建
+临时或持久化输出，也不得自行推断、拼接或替换 Goal Plus 的存储位置；句柄未就绪时按公开合同
+报告 `error`。
 
 ## 压测输入映射
 
 压测 Skill 接收冻结的服务事实和 workload 合同：
 
 - 服务路径 A：在同一个受保护调用中完成部署、健康验收、官方测量、raw result 校验和清理；
-- 服务路径 B：Provider 提供已部署服务地址、服务身份、tokenizer、部署报告和 attempt 目录，
+- 服务路径 B：Provider 提供已部署服务地址、服务身份、tokenizer、部署报告和 Goal Plus 输出句柄，
   压测只负责复核和测量；
 - 数据集遵守 benchmark contract：preset 传场景，由 benchmark 派生数据集 ID 并使用默认缓存
-  解析；hf 传数据集 ID；custom 传本地数据集路径；缓存根目录沿用 benchmark 的默认解析；
+  解析；hf 传数据集 ID；custom 传本地数据集路径；缓存位置沿用 benchmark 的默认解析；
 - workload 必须显式提供选择方式、场景、模式、数据集来源、请求数、预热、并发、到达率、
   轮次、采样和生成参数；
-- 最终报告和 raw result、持久化版本及 Evidence 均遵守“输出与持久化”中的目录合同。
+- 最终报告、raw result、持久化版本及 Evidence 均遵守 Goal Plus 的公开输出句柄合同。
 
 字段缺失、矛盾或冻结条件未满足时反馈为 `invalid`；字段值以 Provider 事实和冻结合同为准。
