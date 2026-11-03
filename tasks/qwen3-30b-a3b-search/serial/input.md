@@ -7,7 +7,7 @@
 | --- | --- |
 | `model_path` | `/data/disk/models/Qwen3-Coder-30B-A3B-Instruct` |
 | `max_attempts` | `10` |
-| `authorized_ascend_npu_devices` | `0-7` |
+| `authorized_ascend_npu_devices` | `["0", "1", "2", "3", "4", "5", "6", "7"]` |
 | `max_tp_dp` | `4` |
 | `tp` | `2` |
 | `dp` | `1` |
@@ -50,7 +50,8 @@ Baseline origin 部署参数（baseline 固定；candidate 仍可在可调字段
 - 本任务的 preset 负载类型固定为 `long_prefill`；数据集 ID 和适配器由 benchmark 按场景
   contract 派生并从默认 `~/.cache` 解析，用户不填写数据集 ID 或路径。
 - `max_attempts` 和 `max_tp_dp` 必须是正整数。
-- `authorized_ascend_npu_devices` 必须是无重复的非负十进制设备 ID 列表。
+- `authorized_ascend_npu_devices` 必须是按物理设备顺序声明、无重复的非负十进制设备 ID 列表；
+  列表顺序是本任务的稳定卡组顺序，不得在搜索过程中重排。
 - `max_tp_dp` 不得大于授权设备数量。
 - `tp`、`dp`、`max_num_seqs`、`max_num_batched_tokens`、`enable_expert_parallel`、
   `enable_prefix_caching`、`distributed_executor_backend`、`async_scheduling` 和
@@ -74,5 +75,11 @@ Baseline origin 部署参数（baseline 固定；candidate 仍可在可调字段
   Skill 复核；非法组合不得派发。
 - baseline 固定使用 `tp=4`，按 `--tensor-parallel-size 4` 传递；`max_tp_dp` 和授权设备数必须
   支持该 baseline，baseline 不使用 deployment Skill 的最小 TP recommendation。
-- 设备组、端口、锁、输出目录、verifier 临时目录和实际服务命令由 provider 注入。
+- 设备组按 `tp * dp` 从 `authorized_ascend_npu_devices` 的前缀确定：`k = tp * dp` 的所有
+  配置统一使用前 `k` 张卡，并保持 `ASCEND_RT_VISIBLE_DEVICES` 的顺序不变。例如当前授权
+  列表下，所有 `tp * dp = 2` 的配置都必须使用 `0,1`，所有 `tp * dp = 4` 的配置都必须
+  使用 `0,1,2,3`；`tp=1, dp=2` 与 `tp=2, dp=1` 也必须共享 `0,1`。baseline、candidate
+  和 promotion 必须复用同一映射。provider 负责注入这些固定设备组、端口、锁、输出目录、
+  verifier 临时目录和实际服务命令；不得按实时 free/busy 或调度顺序替换同数量的其他卡。
+  固定设备组不可用时只能报告资源阻塞/失败，不能静默换卡。
 - 缺少输入、保留占位符、路径不可读或约束不满足时只能报告 `blocked`/`incomplete`。

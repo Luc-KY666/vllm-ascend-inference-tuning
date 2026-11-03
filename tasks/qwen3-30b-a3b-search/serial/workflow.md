@@ -52,6 +52,17 @@ workload 字段。三个字段必须为有效值，并在 baseline、candidate�
 ## 串行模式
 
 - Goal Plus 参数为 `max_parallel=1`，同一时刻只有一个 active candidate。
-- `max_attempts` 是整个 Search 的共享候选预算；每个 candidate 使用用户授权的候选值，
-  不因串行模式复制或重置 workload 合同。
+- `max_attempts` 是整个 Search 的 candidate attempt 共享预算；每个 candidate 使用用户授权的
+  候选值，不因串行模式复制或重置 workload 合同。只要仍有未测试的合法配置且没有硬阻塞，
+  Goal Plus 必须继续提交不重复 candidate，尽可能消耗到 `max_attempts`，不能因当前已有最优
+  结果、单次 `invalid` 或 `error` 提前停止。
+- 每个已派发并结算为 `valid`、`invalid` 或 `error` 的 candidate attempt 计数一次；查询超时、
+  原 attempt 恢复、清理和幂等重试不重复计数，也不能重复测试同一配置来填满预算。候选空间
+  穷尽、资源/环境硬阻塞或安全停止条件触发时才允许提前结束，并记录
+  `attempts_used/max_attempts` 和停止原因；baseline/promotion 的独立复验不挪用 candidate
+  预算。
+- 设备组由 `input.md` 的授权设备列表顺序和 `k = tp * dp` 的前缀确定。相同 `k` 的所有配置
+  （包括 baseline、candidate、promotion）必须使用同一组、同一物理顺序和同一
+  `ASCEND_RT_VISIBLE_DEVICES`；当前授权列表中 `k=2` 固定为 `0,1`，`k=4` 固定为 `0,1,2,3`。
+  不得因为实时 free/busy、lane 或调度顺序换用其他同数量卡；固定组不可用时报告资源阻塞/失败。
 - 具体 Search、部署、压测、报告和交付步骤只按 bridge skill 执行。

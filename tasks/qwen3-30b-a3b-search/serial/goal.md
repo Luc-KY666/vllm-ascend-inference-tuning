@@ -45,5 +45,17 @@ baseline origin 固定使用以下部署参数：`--trust-remote-code`、`--max-
 默认值、benchmark mode、数据集适配器、生成参数和百分位配置由
 `vllm-ascend-benchmark` 及其 references 指定，不由 task 猜测或覆写。
 
-串行模式使用 `max_parallel=1`。用户输入的 `max_attempts` 是并发搜索的共享预算，只有获得
-有效结果的搜索才消耗一个预算单位；没有得到结果的无效搜索不占用该预算。
+串行模式使用 `max_parallel=1`。用户输入的 `max_attempts` 是 candidate attempt 的共享预算，
+不因串行模式复制或重置。Goal Plus 必须在候选空间仍有未测试的合法配置且不存在硬阻塞时，
+持续派发不重复的 candidate，尽可能把已结算的 candidate attempt 数量推进到
+`max_attempts`；不能因为已经找到当前最优值、单次候选无效或一次候选报错而提前结束。
+每个已派发并进入 `valid`、`invalid` 或 `error` 终态的 candidate attempt 只计数一次；客户端
+查询超时、恢复原 attempt 和清理过程不得重复计数，也不得为了消耗预算重复测试同一配置。
+只有候选空间已穷尽、资源/环境等硬阻塞无法继续，或 Goal Plus 的安全停止条件触发时，才允许
+少于 `max_attempts` 结束，并在结果中记录 `attempts_used/max_attempts` 与提前停止原因。
+
+设备组必须按 `input.md` 中 `authorized_ascend_npu_devices` 的声明顺序由 `tp * dp` 确定：
+对任意相同的 `tp * dp = k`，baseline、candidate 和 promotion 都必须使用完全相同、顺序也
+相同的前 `k` 张物理卡。不得因实时 free/busy、lane 或调度顺序改用另一组同数量卡；固定组
+不可用时应报告资源阻塞/失败，不得静默换卡。每次 attempt 的 `ASCEND_RT_VISIBLE_DEVICES`、
+资源锁和部署报告都必须记录这组实际物理设备。
