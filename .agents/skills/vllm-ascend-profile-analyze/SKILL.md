@@ -2,7 +2,7 @@
 name: vllm-ascend-profile-analyze
 description: >-
   分析已采集的昇腾 NPU 推理 profile，提供两条路径：正常 profile 分析（目录完整性、计算/通信占比定性、
-  Top-N 算子统计和基础通信摘要）以及调优相关分析（EP 负载、启动配置、通信、Free 成因/host 下发和算子融合候选）。不负责 profile
+  Top-N 算子统计和基础通信摘要）以及调优相关分析（EP 负载、启动配置、通信、Free 成因/host 下发、图模式和算子融合候选）。不负责 profile
   采集、benchmark 编排、模型部署、参数修改或代码落地。
 ---
 
@@ -28,6 +28,7 @@ description: >-
 | 用户提示/目标 | 选择的分析能力 | 主要输入 |
 |---|---|---|
 | “分析这个 profile”“看计算/通信占比”“找热点算子” | 路径 1：正常 Profile 分析 | profile 目录 |
+| “图模式怎么选”“要不要开图模式”“cudagraph_mode” | 图模式分析与推荐 | profile、实际启动命令、部署形态（单节点/PD） |
 | “EP 不均衡”“MoE 专家负载”“路由不均” | EP 负载和启动配置分析 | profile、`cluster_analysis.db`、实际启动命令 |
 | “启动参数怎么调”“配置怎么改” | 配置建议分析 | profile、实际启动命令、版本 help |
 | “通信瓶颈”“通信是否均衡”“快慢 rank 通信差异”“通信 overlap”“HCCS/带宽” | 通信分析 | step trace、集群分析 DB、通信矩阵、rank 数据 |
@@ -64,7 +65,7 @@ Free% = Free / denominator
 
 - `Computing%` 最高：compute-bound 倾向；
 - `Communication%` 最高：comm-bound 倾向；
-- `Free%` 最高或明显偏高：free-bound 倾向，并注明请求间隔可能造成 Free 偏高；深入成因判定转 2.4；
+- `Free%` 最高或明显偏高：free-bound 倾向，并注明请求间隔可能造成 Free 偏高；深入成因判定转 2.5；
 - 多项接近：标记为混合型，不强行选择单一瓶颈。
 
 同时记录 `Overlapped`、`Bubble` 和多 rank 的 min/median/max。若存在 `communication_matrix.json`，只做基础摘要：是否有有效 HCCS 项、通信时间/带宽概况和是否存在明显 rank 差异；单卡 LOCAL 自环不能当作跨卡通信瓶颈。
@@ -86,9 +87,13 @@ Free% = Free / denominator
 
 ### 路径 2：调优相关分析能力
 
-适用于用户明确提出配置、通信、EP、算子融合、Free 偏高或 host 下发等调优问题，或要求基于 profile 给出调优方向的场景。本路径只产出候选和证据，不执行 benchmark 或变更。
+适用于用户明确提出配置、通信、EP、算子融合、Free 偏高或 host 下发、图模式等调优问题，或要求基于 profile 给出调优方向的场景。本路径只产出候选和证据，不执行 benchmark 或变更。
 
-#### 2.1 EP 负载分析与配置建议
+#### 2.1 图模式分析与推荐
+
+该分支基于 profile 证据和部署形态推荐 vllm-ascend 的 cudagraph_mode，只产候选不执行。入口有两类：用户直接问图模式怎么选/要不要开图；free/host 下发分析（2.5）命中模型侧下发压力后转来。流程：从实际启动命令读当前模式和 TASK_QUEUE_ENABLE，确认部署形态（单节点，或 PD 分离的 P/D 角色）；用 profile 判断收益（下发压力、Host Bound、高频小算子 → 图模式直接对症，capture/replay 消除逐算子下发）；按矩阵给候选——单节点 FULL、PD 的 P 节点 FULL_AND_PIECEWISE（prefill shape 多变，piecewise 编译适配）、D 节点 FULL_DECODE_ONLY（decode 批次均匀，整图 capture/replay）。模式语义、推荐矩阵和配置格式（`--compilation-config` 须 JSON object、`cudagraph_capture_sizes`、与 TASK_QUEUE_ENABLE 的关系）读取 [reference/graph-mode.md](reference/graph-mode.md)。
+
+#### 2.2 EP 负载分析与配置建议
 
 EP 分支只按下面顺序执行，不把 profile 分析和配置推荐混在一起：
 
@@ -100,7 +105,7 @@ EP 分支只按下面顺序执行，不把 profile 分析和配置推荐混在�
    - token 偏斜且性能恶化：读取 [reference/ep-balance.md](reference/ep-balance.md) 第 4 节，先检查当前 vLLM-Ascend EPLB 源码和实际配置，再生成首次启用或单变量调整候选；
 4. **输出复测条件**：记录当前命令、源码版本、profile 证据、唯一配置变更和固定 benchmark 复测要求。源码未确认支持的字段不得推荐。
 
-#### 2.2 Profile 驱动的算子融合分析
+#### 2.3 Profile 驱动的算子融合分析
 
 当用户提示选择“算子融合”且 profile 显示高 Count 低 Avg 小算子、AI_CPU fallback 或 host dispatch 序列，并且 device 忙时段确实受其影响时，读取
 [reference/operator-fusion.md](reference/operator-fusion.md)。先确认 profile 类型，再决定结论强度：
@@ -124,7 +129,7 @@ EP 分支只按下面顺序执行，不把 profile 分析和配置推荐混在�
 
 没有源码、shape 或真实接口证据时，只输出候选设计，不声称已经完成替换。
 
-#### 2.3 通信分析
+#### 2.4 通信分析
 
 该分支只负责通信问题的入口和结果路由，不分析 CPU 绑核、Host binding、通用 Host dispatch 或其他非通信调优问题。该分支回答多卡通信是否均衡、不均衡的根因（等待型/传输型/负载型）；具体的输入资格判断、数据准备、通信占比粗筛、热点定位、根因分流（等待判定、传输分类）和输出格式，读取 [reference/communication-analysis.md](reference/communication-analysis.md)。
 
@@ -144,7 +149,7 @@ EP 分支只按下面顺序执行，不把 profile 分析和配置推荐混在�
 
 当前 skill 产出通信证据、根因判断和对应调优候选方向，不执行通信参数修改或 patch。
 
-#### 2.4 Free 时间与 host 下发分析
+#### 2.5 Free 时间与 host 下发分析
 
 该分支判定单卡或某 rank 的 Device Free 偏高的成因，落到 host 下发（Host Bound）时给候选；只产候选不执行。入口有三类：用户直接提出 Free/host 下发问题、路径 1 定性 free-bound 倾向后的深入判定、通信分析结案表 `wait-caused`（伪快卡）路由来的 Free 偏高 rank。
 
@@ -164,3 +169,4 @@ EP 分支只按下面顺序执行，不把 profile 分析和配置推荐混在�
 | [reference/ep-balance.md](reference/ep-balance.md) | 生成和读取 EP 数据库，得出 token 负载结论；偏斜确认后生成 EPLB 配置候选 |
 | [reference/operator-fusion.md](reference/operator-fusion.md) | profile 热点到源码融合候选的分析规则 |
 | [reference/free-analysis.md](reference/free-analysis.md) | Free 时间成因判定与 host 下发（Host Bound）分析，落到 host 下发时给候选 |
+| [reference/graph-mode.md](reference/graph-mode.md) | 基于 profile 证据和部署形态推荐 cudagraph_mode |
