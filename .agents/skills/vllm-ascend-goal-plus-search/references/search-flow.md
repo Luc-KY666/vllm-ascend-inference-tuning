@@ -51,8 +51,8 @@ Search 并创建新的 Search。
 - Goal Plus 已确认的 source reference、source HEAD/digest、candidate edit surface 和不可修改的
   verifier/workload 文件；
 - candidate 并发、累计预算、超时和停止条件；
-- 每个配置的 benchmark 重复次数（不得少于 3 次）、固定 workload/seed、唯一评分字段的聚合
-  公式和单次失败的结算规则；
+- 每个 baseline、candidate 和 promotion attempt 只执行一次正式 benchmark，固定 workload/seed、
+  唯一评分字段的直接评分规则和单次失败的结算规则；不追加测量或样本聚合；
 - 已注册资源池、设备组、端口、物理锁，以及 Goal Plus 注入的 deployment/benchmark 输出句柄和
   verifier Evidence 句柄；句柄的实际存储位置、命名和层级不由 task、verifier 或本 skill 指定；
 - 一个用于排名的 process verifier 以及 promotion verifier；
@@ -131,6 +131,12 @@ wrapper 必须设置 `PYTHONDONTWRITEBYTECODE=1`。服务停止时除进程组�
 清理失败都必须保留真实 Evidence，并按本流程的 `settling -> error` 规则收尾；不得把未清理
 现场交给下一个 attempt。
 
+wrapper 在启动 vLLM 服务前必须向服务进程环境注入 `VLLM_RPC_BASE_PATH=/tmp`，以避免
+Goal Plus 深层临时目录使 IPC transport socket 超过 Linux `sockaddr_un.sun_path` 的路径限制。
+该变量只缩短 IPC transport 路径；`GOAL_PLUS_VERIFIER_TMPDIR` 以及 Goal Plus 注入的报告、
+日志和 Evidence 句柄必须继续原样传递和使用，不能把任何持久化输出重定向到 `/tmp`。服务
+停止后只清理本次 attempt 产生且可归属的 IPC 临时项，不得删除 `/tmp` 中的其他文件。
+
 Main 在以下每个动作前都必须先读取公开 recovery/status：派发 candidate、steering、停止
 session、`session_run`、`select` 和 promotion。只有同时确认以下条件才可继续：
 
@@ -180,8 +186,9 @@ attempt；不得调用新的 `session_run`、steering、停止、select 或 prom
 | candidate | edit surface 内的候选值 | 搜索候选空间 |
 | promotion | 获选值，由 Goal Plus 分配独立 attempt 句柄 | 独立复验与交付 |
 
-baseline 失败、环境故障和候选失败必须分开归因。每个候选配置只提交一次；同一配置的至少 3 次
-benchmark 是冻结评价合同的一部分，必须全部保留并参与聚合，不能通过额外重跑或挑选样本直到通过。
+baseline 失败、环境故障和候选失败必须分开归因。每个 candidate 配置只提交一次；每个
+baseline、candidate 和 promotion attempt 只执行一次正式 benchmark，单个官方 raw result 直接
+作为该 attempt 的评分；测量失败直接按冻结规则结算，不能追加测量或挑选样本直到通过。
 
 ## 5. 独立 verifier 与结算
 
@@ -193,13 +200,12 @@ verifier 必须只读候选字段和受信任的 provider 注入，并在一次 
 2. 复用 Search 级唯一 probe，校验路径、schema、上下文和 SHA256；不得重新探测。需要
    CLI 能力或参数信息时读取 probe 保存的 help artifact，不得重新执行任何 help 命令。
 3. 调用部署 Skill 完成资源、配置、静态检查、服务启动、健康、身份和最小请求验收；服务保持
-   运行，不因重复 benchmark 重启。
-4. 将部署交还的服务事实传给压测 Skill，在同一服务实例上按冻结 workload 顺序执行至少 3 次
-   正式 benchmark；每次使用相同 workload、seed、请求合同和统计口径，分别核验 raw result。
-5. 从每次官方 raw result 读取唯一评分字段以及 Search 合同要求交付的其它官方性能字段，只有
-   达到冻结重复次数且全部样本有效时才按字段分别计算算术平均值。唯一评分字段的平均值作为
-   该配置的搜索评分，同时保留每次样本的身份、指标和 Evidence 引用；任一样本失败时按冻结
-   规则结算为 `invalid` 或 `error`，不得静默减少样本数。
+   运行，benchmark 阶段不重启服务。
+4. 将部署交还的服务事实传给压测 Skill，在同一服务实例上按冻结 workload 顺序执行一次正式
+   benchmark；使用冻结的 workload、seed、请求合同和统计口径，核验该次 raw result。
+5. 从该次官方 raw result 读取唯一评分字段以及 Search 合同要求交付的其它官方性能字段，直接
+   将该次有效结果作为该 attempt 的搜索评分，并保留其身份、指标和 Evidence 引用；该次测量
+   失败时按冻结规则结算为 `invalid` 或 `error`，不得追加测量或挑选样本。
 6. 导出部署/压测 artifact，停止本次服务并核对资源清理；无论成功或失败，都先保留 serve/
    benchmark 日志再清理。
 
@@ -251,14 +257,14 @@ attempt 中断或客户端超时时回到上面的固定续跑循环；该循环
 
 最终 Search report/Evidence 至少包含：
 
-- baseline 与 final 的同口径每轮原始样本、唯一指标、seed、workload digest、重复次数、预热和
-  统计公式，以及算术平均值；baseline/final 必须使用同一比较合同，不能只给一个未展开的汇总值；
+- baseline 与 final 的同口径单轮原始样本、唯一指标、seed、workload digest、预热和统计公式；
+  baseline/final 必须使用同一比较合同，不能只给一个未展开的汇总值；
 - baseline/final 的模型、服务和候选配置摘要和 hash，实际物理设备/lane 身份、端口、资源锁
   和服务生命周期；
 - 与指标方向一致的收益公式和代入值。最小化指标使用
   `(baseline - final) / baseline`，最大化指标使用 `(final - baseline) / baseline`；缺失
   有效两端样本时不得计算收益；
-- 重复/成对测量策略、离散度、设备轮换、并发争用、调度抖动等噪声说明和解释边界；
+- 单次测量的解释边界、设备轮换、并发争用、调度抖动等噪声说明；
 - 所有失败候选、attempt 状态、失败分类、原因、是否可重试和未覆盖搜索空间；
 - verifier 失败时的 serve、benchmark 和 wrapper 日志 Evidence 引用，以及未生成日志的明确记录；
 - 服务/子进程、端口、设备锁、Goal Plus 输出句柄、清理状态以及相关 Evidence hash；

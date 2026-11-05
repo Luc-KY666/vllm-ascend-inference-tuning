@@ -5,7 +5,7 @@ Skill 的输入，并定义 Provider 反馈给 Search 的事实结构。搜索�
 
 ## Probe 绑定
 
-Search 级 probe、help 输出和重复调用策略见[搜索流程](search-flow.md)。Provider 的职责是把
+Search 级 probe、help 输出和调用约束见[搜索流程](search-flow.md)。Provider 的职责是把
 Search 绑定的 probe artifact 引用、SHA256、执行上下文和 shell fingerprint 注入每个 attempt，并让
 deployment/benchmark Skill 引用这些事实。Search 绑定时，执行 Skill 以既有 artifact 完成
 probe 校验；校验失败或上下文变化时，当前 Search 进入流程定义的阻塞状态并按流程创建新的 Search。
@@ -25,10 +25,9 @@ valid attempt 的反馈由以下结构组成：部署报告的 schema 标识为
 `vllm-ascend-deployment-report-v3`，服务事实来自 `model`、`resources`、`service`、`launch`；
 压测报告的 schema 标识为 `vllm-ascend-benchmark-report-v3`，负载和结果来自 `model`、`load`、
 `dataset`、`arrival`、`parameters`、`result`。Search 的唯一评分字段由 SearchSpec 指定，
-直接映射到 `result` 中的官方指标百分位字段；报告主体承载单轮官方字段，raw result 和摘要归入
-Evidence 索引。Search verifier 至少收集 3 个有效单轮值，并对唯一评分字段及 Search 合同要求
-交付的其它官方性能字段逐字段取算术平均；唯一评分字段的平均值是 Search 层评分，不改变
-deployment/benchmark 公共报告 schema。
+直接映射到 `result` 中的官方指标百分位字段；报告主体承载本轮官方字段，raw result 和摘要归入
+Evidence 索引。每个 baseline、candidate 和 promotion attempt 只交付一个有效单轮值，该值直接
+作为 Search 层评分；不追加测量或取多个样本平均，不改变 deployment/benchmark 公共报告 schema。
 
 ## 输入来源
 
@@ -40,6 +39,9 @@ deployment/benchmark 公共报告 schema。
 4. 目标环境事实：命令行能力、模型配置、tokenizer、版本、数据类型、量化和上下文能力。
 
 第 1、3、4 类输入保持冻结；Provider 事实以受信任的 Goal Plus/provider 回执为准。
+Verifier 还必须为 vLLM 服务进程固定注入 `VLLM_RPC_BASE_PATH=/tmp`。它只用于缩短 IPC
+transport socket 路径，不改变 `GOAL_PLUS_VERIFIER_TMPDIR` 或任何 Goal Plus 报告、日志和
+Evidence 句柄；持久化输出仍必须写入 Goal Plus/provider 注入的位置。
 
 ## 部署输入映射
 
@@ -53,6 +55,7 @@ deployment/benchmark 公共报告 schema。
 | 端口候选 | provider 注入 | 范围限定为候选集合 |
 | 偏好端口 | provider 注入 | 必须属于候选集合 |
 | `GOAL_PLUS_VERIFIER_TMPDIR` | Goal Plus/provider 注入 | 本次 verifier 使用的运行时输出句柄，原样透传 |
+| `VLLM_RPC_BASE_PATH` | verifier 固定运行时环境 | 必须固定为 `/tmp`；仅用于 vLLM IPC transport，不作为报告或 Evidence 输出目录 |
 | `runtime.<field>` | 外部候选或推荐 | 字段名和值域由 SearchSpec 提供 |
 | 资源上限 | SearchSpec/环境事实 | 由外部合同冻结 |
 

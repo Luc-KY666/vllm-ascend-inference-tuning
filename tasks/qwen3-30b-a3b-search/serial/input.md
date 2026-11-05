@@ -9,18 +9,18 @@
 | `max_attempts` | `10` |
 | `authorized_ascend_npu_devices` | `["0", "1", "2", "3", "4", "5", "6", "7"]` |
 | `max_tp_dp` | `4` |
-| `tp` | `2` |
-| `dp` | `1` |
+| `tp` | `2, 4` |
+| `dp` | `1, 2` |
 | `max_num_seqs` | `16-256` |
-| `max_num_batched_tokens` | `64-8192` |
-| `enable_expert_parallel` | `false,true` |
-| `enable_prefix_caching` | `false,true` |
+| `max_num_batched_tokens` | `2048-32768` |
+| `enable_expert_parallel` | `true|false` |
+| `enable_prefix_caching` | `true|false` |
 | `distributed_executor_backend` | `mp|null` |
 | `async_scheduling` | `true` |
 | `compilation_config` | `{"cudagraph_mode":"NONE"}`; `{"cudagraph_mode":"FULL_DECODE_ONLY"}`; `{"cudagraph_mode":"PIECEWISE"}`; `{"cudagraph_mode":"FULL_AND_PIECEWISE"}` |
 | `num_prompts` | `500` |
 | `max_concurrency` | `64` |
-| `request_rate` | `4` |
+| `request_rate` | `4 req/s` |
 
 固定部署参数（不可调，baseline、candidate 和 promotion 必须一致）：
 

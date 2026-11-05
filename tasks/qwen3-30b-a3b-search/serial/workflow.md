@@ -1,7 +1,17 @@
 # 串行任务合同
 
 通用执行流程统一由 `vllm-ascend-goal-plus-search/SKILL.md` 及其 references 负责；本文件
-只声明本任务的目标、可调参数、benchmark 合同、用户输入和串行模式差异。
+集中声明本任务的完整目标、部署 edit surface、baseline、benchmark 合同、用户输入、执行
+职责和串行模式差异。
+
+## 执行职责与完成条件
+
+- Main 必须根据本轮授权、实际环境和本文件准备可运行的 origin 配置，并冻结独立 verifier、
+  负载、指标、资源和预算；不得沿用旧报告的分数。
+- worker 只交候选配置；verifier 负责试验服务的启动、请求、测量和清理。
+- 至少根据一轮真实 Evidence 提出下一轮假设；按公开选择结果复验。未获得有效收益时，
+  如实交付经过复验的 baseline。
+- 缺少授权、有效测量或清理证据时，报告必须标记为未完成。
 
 ## 优化目标
 
@@ -48,6 +58,10 @@ baseline origin 固定使用 `--trust-remote-code`、`--max-num-seqs 100`、
 workload 字段。三个字段必须为有效值，并在 baseline、candidate、promotion 中保持一致；
 其余 workload 参数、默认值、benchmark mode、数据集适配器、生成参数和百分位配置由
 `vllm-ascend-benchmark` 及其 references 指定和记录。
+
+每个 baseline、candidate 和 promotion attempt 仅执行一次正式 benchmark。该次官方 raw result
+直接作为该 attempt 的评分；不追加测量、不对多个样本取平均，失败直接按 `invalid` 或 `error`
+结算。
 
 ## 串行模式
 

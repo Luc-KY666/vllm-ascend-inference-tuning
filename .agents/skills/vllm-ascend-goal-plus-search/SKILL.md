@@ -32,6 +32,9 @@ Goal Plus 的任务结构或存储布局。
 - preset 只冻结 workload 场景；数据集 ID/路径由 benchmark 按场景合同派生，task 不另造数据来源。
 - Provider/Goal Plus 注入候选参数、设备组、端口、锁以及不透明的运行时输出句柄；skill 将这些
   输入原样交给 verifier、deployment 和 benchmark，不创建目录、不选择路径、不定义目录层级。
+- 每个 verifier attempt 启动 vLLM 服务前必须向 verifier/服务进程环境注入
+  `VLLM_RPC_BASE_PATH=/tmp`，将 vLLM IPC transport socket 限制在短路径下；该变量只影响
+  IPC transport，不能替换、覆盖或重定向 Goal Plus 注入的报告、日志和 Evidence 输出句柄。
 - Goal、Search、FrozenSpec、run、candidate、attempt、Evidence 以及所有输出的命名、生命周期和
   持久化方式由 Goal Plus 管理；skill 只使用公开接口返回的 ID、状态和 artifact 引用。
 - Search source 必须是独立、clean 的 Git 目录；不绕过设备池、lane lease、物理锁或独立 verifier。
@@ -45,11 +48,12 @@ Goal Plus 的任务结构或存储布局。
    和 final review；
 3. 在每个 verifier attempt 中调用 [`vllm-ascend-deployment`](../vllm-ascend-deployment/SKILL.md)，
    传入冻结的模型、候选部署参数、Provider 资源事实、Search 级 probe/help 引用和 Goal Plus
-   提供的运行时输出句柄，接收部署报告与服务事实；
+   提供的运行时输出句柄，并在服务进程环境中设置 `VLLM_RPC_BASE_PATH=/tmp`，接收部署报告
+   与服务事实；
 4. 将部署返回的服务地址、served model identity、tokenizer 和部署报告交给
    [`vllm-ascend-benchmark`](../vllm-ascend-benchmark/SKILL.md)，在同一已启动服务上按冻结 workload
-   至少执行 3 次正式 benchmark，接收每次官方报告、raw result 引用和唯一评分字段，并计算其
-   算术平均值作为该配置的搜索评分；
+   仅执行一次正式 benchmark，接收该次官方报告、raw result 引用和唯一评分字段，并直接将该次
+   结果作为该配置的搜索评分；不追加测量、不对多个样本取平均；
 5. 将部署/压测结果和清理状态交回 Goal Plus 公开接口，由 Goal Plus 完成状态、Evidence、选择、
    提升和最终报告的持久化。任一 verifier 失败时，先保留当次 serve/benchmark 日志和最后状态
    的 Evidence 引用，再执行服务清理；完整日志不写入最终报告正文。

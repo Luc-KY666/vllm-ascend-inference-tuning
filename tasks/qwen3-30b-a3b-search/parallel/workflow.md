@@ -1,7 +1,17 @@
 # 并行任务合同
 
 通用执行流程统一由 `vllm-ascend-goal-plus-search/SKILL.md` 及其 references 负责；本文件
-只声明本任务的目标、可调参数、benchmark 合同、用户输入和并行模式差异。
+集中声明本任务的完整目标、部署 edit surface、baseline、benchmark 合同、用户输入、执行
+职责和并行模式差异。
+
+## 执行职责与完成条件
+
+- Main 必须根据本轮授权、实际环境和本文件准备可运行的 origin 配置，并冻结独立 verifier、
+  负载、指标、资源和预算；不得沿用旧报告的分数。
+- worker 只交候选配置；verifier 负责试验服务的启动、请求、测量和清理。
+- 至少根据一轮真实 Evidence 提出下一轮假设；按公开选择结果复验。未获得有效收益时，
+  如实交付经过复验的 baseline。
+- 缺少授权、有效测量或清理证据时，报告必须标记为未完成。
 
 ## 优化目标
 
@@ -49,10 +59,15 @@ workload 字段。三个字段必须为有效值，并在 baseline、candidate�
 其余 workload 参数、默认值、benchmark mode、数据集适配器、生成参数和百分位配置由
 `vllm-ascend-benchmark` 及其 references 指定和记录。
 
+每个 baseline、candidate 和 promotion attempt 仅执行一次正式 benchmark。该次官方 raw result
+直接作为该 attempt 的评分；不追加测量、不对多个样本取平均，失败直接按 `invalid` 或 `error`
+结算。
+
 ## 并行模式
 
 - Goal Plus 参数为 `max_parallel=2`，每个 batch 同时包含两个 candidate。
 - 两个 candidate 必须使用各自的候选值；其资源隔离和执行编排由 provider/bridge skill
   负责，task 不声明设备、端口或目录分配规则。
-- `max_attempts` 是整个 Search 的共享候选预算，不按 lane 复制或重置 workload 合同。
+- `max_attempts` 是整个 Search 的共享候选预算，不按 lane 复制或重置 workload 合同；只有
+  获得有效结果的 candidate 才消耗一个预算单位，没有得到结果的无效搜索不占用该预算。
 - 具体 Search、部署、压测、报告和交付步骤只按 bridge skill 执行。
