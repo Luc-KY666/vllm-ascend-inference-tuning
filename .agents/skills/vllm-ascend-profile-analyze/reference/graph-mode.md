@@ -22,6 +22,5 @@
 ## 3. 配置格式与联动
 
 - `--compilation-config '{"cudagraph_mode":"FULL_DECODE_ONLY"}'`：必须 JSON object，不能直接传字符串；
-- `cudagraph_capture_sizes`：指定 capture 的 batch 尺寸列表（如 [1,2,4,8,16,32,64,128,256,512]）；
-- 图模式下官方示例设 `TASK_QUEUE_ENABLE=1`（关闭 ACLGraph 手动内存控制）；
-- 当前 NONE 时，下发压力有两条路：开 `TASK_QUEUE_ENABLE=2`（仅 eager 下有效）或改图模式；推荐改图模式，上图后 TQ=2 不再适用。
+- `cudagraph_capture_sizes`：指定 capture 的 batch 尺寸列表（如 [1,2,4,8,16,32,64,128,256,512]），默认不设置；
+- `TASK_QUEUE_ENABLE`：图模式下官方示例设为 1；设为 2 仅 eager 下有效，是留在 eager 时缓解下发压力的手段——当前 NONE 时推荐首先推荐使用图模式，如果用户强调只能使用eager时推荐设置为 2。
