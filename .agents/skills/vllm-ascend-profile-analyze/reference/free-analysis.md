@@ -92,7 +92,7 @@ python scripts/dispatch_distribution.py <profile 父目录或单个 *_ascend_pt 
 六类根因可同时命中，每类自带候选/方向：
 
 - **模型侧下发压力**——找什么：高频小算子、launch 开销与 device 运行同量级、可融合的 Cast/TransData/Transpose 序列、低占用的零碎 kernel。候选：
-  - 融合/减少 launch 次数：转本 skill 的算子融合分支（SKILL.md 2.3）；
+  - 融合/减少 launch 次数：转本 skill 的算子融合分支（SKILL.md 2.5）；
   - 图模式（转 SKILL.md 2.1）：capture/replay 消除逐算子下发，优先于 `TASK_QUEUE_ENABLE=2`（后者限 eager）；
   - `TASK_QUEUE_ENABLE=2`：`ASCEND_LAUNCH_BLOCKING=1` 时失效；Level2 增 NPU 显存峰值；eager 模式前提；须先有下发/aclnn 在关键路径的证据，非通用解药；
   - `ACLNN_CACHE_LIMIT=100000`（默认 10000，范围 [1,10000000]）：动态 shape 一级下发瓶颈时；增 Host 内存；

@@ -65,7 +65,7 @@ Free% = Free / denominator
 
 - `Computing%` 最高：compute-bound 倾向；
 - `Communication%` 最高：comm-bound 倾向；
-- `Free%` 最高或明显偏高：free-bound 倾向，并注明请求间隔可能造成 Free 偏高；深入成因判定转 2.5；
+- `Free%` 最高或明显偏高：free-bound 倾向，并注明请求间隔可能造成 Free 偏高；深入成因判定转 2.4；
 - 多项接近：标记为混合型，不强行选择单一瓶颈。
 
 同时记录 `Overlapped`、`Bubble` 和多 rank 的 min/median/max。若存在 `communication_matrix.json`，只做基础摘要：是否有有效 HCCS 项、通信时间/带宽概况和是否存在明显 rank 差异；单卡 LOCAL 自环不能当作跨卡通信瓶颈。
@@ -91,7 +91,7 @@ Free% = Free / denominator
 
 #### 2.1 图模式分析与推荐
 
-该分支基于 profile 证据和部署形态推荐 vllm-ascend 的 cudagraph_mode，只产候选不执行。入口有两类：用户直接问图模式怎么选/要不要开图；free/host 下发分析（2.5）命中模型侧下发压力后转来。流程：从实际启动命令读当前模式和 TASK_QUEUE_ENABLE，确认部署形态（单节点，或 PD 分离的 P/D 角色）；用 profile 判断收益（下发压力、Host Bound、高频小算子 → 图模式直接对症，capture/replay 消除逐算子下发）；按矩阵给候选——单节点 FULL、PD 的 P 节点 FULL_AND_PIECEWISE（prefill shape 多变，piecewise 编译适配）、D 节点 FULL_DECODE_ONLY（decode 批次均匀，整图 capture/replay）。模式语义、推荐矩阵和配置格式（`--compilation-config` 须 JSON object、`cudagraph_capture_sizes`、与 TASK_QUEUE_ENABLE 的关系）读取 [reference/graph-mode.md](reference/graph-mode.md)。
+该分支基于 profile 证据和部署形态推荐 vllm-ascend 的 cudagraph_mode，只产候选不执行。入口有两类：用户直接问图模式怎么选/要不要开图；free/host 下发分析（2.4）命中模型侧下发压力后转来。流程：从实际启动命令读当前模式和 TASK_QUEUE_ENABLE，确认部署形态（单节点，或 PD 分离的 P/D 角色）；用 profile 判断收益（模型侧下发压力、Host Bound、高频小算子）；按矩阵给候选——单节点 FULL、PD 的 P 节点 FULL_AND_PIECEWISE、D 节点 FULL_DECODE_ONLY。模式语义、推荐矩阵和配置格式读取 [reference/graph-mode.md](reference/graph-mode.md)。
 
 #### 2.2 EP 负载分析与配置建议
 
@@ -105,7 +105,33 @@ EP 分支只按下面顺序执行，不把 profile 分析和配置推荐混在�
    - token 偏斜且性能恶化：读取 [reference/ep-balance.md](reference/ep-balance.md) 第 4 节，先检查当前 vLLM-Ascend EPLB 源码和实际配置，再生成首次启用或单变量调整候选；
 4. **输出复测条件**：记录当前命令、源码版本、profile 证据、唯一配置变更和固定 benchmark 复测要求。源码未确认支持的字段不得推荐。
 
-#### 2.3 Profile 驱动的算子融合分析
+#### 2.3 通信分析
+
+该分支只负责通信问题的入口和结果路由，不分析 CPU 绑核、Host binding、通用 Host dispatch 或其他非通信调优问题。该分支回答多卡通信是否均衡、不均衡的根因（等待型/传输型/负载型）；具体的输入资格判断、数据准备、通信占比粗筛、热点定位、根因分流（等待判定、传输分类）和输出格式，读取 [reference/communication-analysis.md](reference/communication-analysis.md)。
+
+输入为 profile 或分析数据库时，按 reference 的 DB 优先级和 profiler level 规则执行；输出必须区分 `wait-caused`、`real-transfer-slow-suspected` 和 `insufficient-evidence`，并引用具体通信组、op、rank 和表字段。结案表的标签按下面的映射转成调优建议：
+
+| 根因标签 | 调优建议/移交 |
+|---|---|
+| `wait-caused`（伪快卡） | host 下发侧候选，取证与候选见 [reference/free-analysis.md](reference/free-analysis.md) §4（`TASK_QUEUE_ENABLE=2` 含 eager 前提与显存风险、`enable_cpu_binding` 须 R 证据、`ACLNN_CACHE_LIMIT`） |
+| `wait-caused`（计算算子种类不一致） | 移交算子/EP 分支查种类分叉原因（动态 shape、EP 路由、条件分支）；区别于负载型——那是同算子、次数/shape 更大 |
+| `wait-caused`（纯计算慢卡） | 计算瓶颈，转路径 1 的 Top-N 算子热点分析 |
+| `wait-caused`（频率异常） | 硬件/频率检查，不属调优候选 |
+| `real-transfer-slow-suspected`（小包模式） | 通信/调用模式候选 |
+| `real-transfer-slow-suspected`（慢链路/retry/relay/对齐） | 链路排查/稳定性检查；对齐只报 suspicion |
+| `real-transfer-slow-suspected`（计算-通信带宽争用） | 先补无重叠基线，再评估通信/计算重叠编排 |
+| 负载型 | EP 分支 → [reference/ep-balance.md](reference/ep-balance.md) 第 4 节 EPLB 配置候选 |
+| `insufficient-evidence` | 输出缺什么证据和补采要求 |
+
+当前 skill 产出通信证据、根因判断和对应调优候选方向，不执行通信参数修改或 patch。
+
+#### 2.4 Free 时间与 host 下发分析
+
+该分支判定单卡或某 rank 的 Device Free 偏高的成因，落到 host 下发（Host Bound）时给候选；只产候选不执行。入口有三类：用户直接提出 Free/host 下发问题、路径 1 定性 free-bound 倾向后的深入判定、通信分析结案表 `wait-caused`（伪快卡）路由来的 Free 偏高 rank。
+
+流程：先按排查表排除请求稀疏、异常频率（空闲自动降频是 Free 长的结果，不结案），再按三条件确认 Host Bound；不成立或无法验证时按 device-bound queueing / `insufficient-evidence` 收口，不出下发候选。成立后拆 Free（逐条区间判读、dispatch 几何、算子下发分布统计）、查异常慢 API、根因分类，只给证据支撑的候选。判读口径与候选明细读取 [reference/free-analysis.md](reference/free-analysis.md)，输出区分 Host Bound / device-bound queueing / `insufficient-evidence`，附根因类别、候选和证据缺口。
+
+#### 2.5 Profile 驱动的算子融合分析
 
 当用户提示选择“算子融合”且 profile 显示高 Count 低 Avg 小算子、AI_CPU fallback 或 host dispatch 序列，并且 device 忙时段确实受其影响时，读取
 [reference/operator-fusion.md](reference/operator-fusion.md)。先确认 profile 类型，再决定结论强度：
@@ -128,32 +154,6 @@ EP 分支只按下面顺序执行，不把 profile 分析和配置推荐混在�
 7. 融合候选、预期收益、风险和回退方式。
 
 没有源码、shape 或真实接口证据时，只输出候选设计，不声称已经完成替换。
-
-#### 2.4 通信分析
-
-该分支只负责通信问题的入口和结果路由，不分析 CPU 绑核、Host binding、通用 Host dispatch 或其他非通信调优问题。该分支回答多卡通信是否均衡、不均衡的根因（等待型/传输型/负载型）；具体的输入资格判断、数据准备、通信占比粗筛、热点定位、根因分流（等待判定、传输分类）和输出格式，读取 [reference/communication-analysis.md](reference/communication-analysis.md)。
-
-输入为 profile 或分析数据库时，按 reference 的 DB 优先级和 profiler level 规则执行；输出必须区分 `wait-caused`、`real-transfer-slow-suspected` 和 `insufficient-evidence`，并引用具体通信组、op、rank 和表字段。结案表的标签按下面的映射转成调优建议：
-
-| 根因标签 | 调优建议/移交 |
-|---|---|
-| `wait-caused`（伪快卡） | host 下发侧候选，取证与候选见 [reference/free-analysis.md](reference/free-analysis.md) §4（`TASK_QUEUE_ENABLE=2` 含 eager 前提与显存风险、`enable_cpu_binding` 须 R 证据、`ACLNN_CACHE_LIMIT`） |
-| `wait-caused`（计算算子种类不一致） | 移交算子/EP 分支查种类分叉原因（动态 shape、EP 路由、条件分支）；区别于负载型——那是同算子、次数/shape 更大 |
-| `wait-caused`（纯计算慢卡） | 计算瓶颈，转路径 1 的 Top-N 算子热点分析 |
-| `wait-caused`（频率异常） | 硬件/频率检查，不属调优候选 |
-| `real-transfer-slow-suspected`（小包模式） | 通信/调用模式候选 |
-| `real-transfer-slow-suspected`（慢链路/retry/relay/对齐） | 链路排查/稳定性检查；对齐只报 suspicion |
-| `real-transfer-slow-suspected`（计算-通信带宽争用） | 先补无重叠基线，再评估通信/计算重叠编排 |
-| 负载型 | EP 分支 → [reference/ep-balance.md](reference/ep-balance.md) 第 4 节 EPLB 配置候选 |
-| `insufficient-evidence` | 输出缺什么证据和补采要求 |
-
-当前 skill 产出通信证据、根因判断和对应调优候选方向，不执行通信参数修改或 patch。
-
-#### 2.5 Free 时间与 host 下发分析
-
-该分支判定单卡或某 rank 的 Device Free 偏高的成因，落到 host 下发（Host Bound）时给候选；只产候选不执行。入口有三类：用户直接提出 Free/host 下发问题、路径 1 定性 free-bound 倾向后的深入判定、通信分析结案表 `wait-caused`（伪快卡）路由来的 Free 偏高 rank。
-
-流程：先按排查表排除请求稀疏、异常频率（空闲自动降频是 Free 长的结果，不结案），再按三条件确认 Host Bound；不成立或无法验证时按 device-bound queueing / `insufficient-evidence` 收口，不出下发候选。成立后拆 Free（逐条区间判读、dispatch 几何、算子下发分布统计）、查异常慢 API、根因分类，只给证据支撑的候选。判读口径与候选明细读取 [reference/free-analysis.md](reference/free-analysis.md)，输出区分 Host Bound / device-bound queueing / `insufficient-evidence`，附根因类别、候选和证据缺口。
 
 #### 调优分析输出
 
