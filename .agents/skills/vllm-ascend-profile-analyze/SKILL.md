@@ -2,7 +2,7 @@
 name: vllm-ascend-profile-analyze
 description: >-
   分析已采集的昇腾 NPU 推理 profile，提供两条路径：正常 profile 分析（目录完整性、计算/通信占比定性、
-  Top-N 算子统计和基础通信摘要）以及调优相关分析（EP 负载、启动配置、通信、Free 成因/host 下发、图模式和算子融合候选）。不负责 profile
+  Top-N 算子统计和基础通信摘要）以及调优相关分析（EP 负载、启动配置、通信、Free 成因/host 下发、图模式、算子融合替换和模型代码优化候选）。不负责 profile
   采集、benchmark 编排、模型部署、参数修改或代码落地。
 ---
 
@@ -33,7 +33,7 @@ description: >-
 | “启动参数怎么调”“配置怎么改” | 配置建议分析 | profile、实际启动命令、版本 help |
 | “通信瓶颈”“通信是否均衡”“快慢 rank 通信差异”“通信 overlap”“HCCS/带宽” | 通信分析 | step trace、集群分析 DB、通信矩阵、rank 数据 |
 | “Free 偏高”“device 空转”“Host Bound”“下发慢” | Free 时间与 host 下发分析 | profile、msprof-analyze 产物、`trace_view.json` |
-| “小算子融合”“融合算子”“结合源码优化” | Profile 驱动的算子融合分析 | profile、vLLM/vllm-ascend 源码、模型 `config.json` |
+| “小算子融合”“融合算子替换”“模型代码优化”“零拷贝” | 算子融合替换与模型代码优化 | profile、vLLM/vllm-ascend 源码、模型 `config.json`、torch_npu 接口 |
 
 如果用户要求“完整调优分析”，先执行路径 1，再按 profile 证据执行相关调优分支。提示无法唯一确定分支时，先说明可选能力并要求用户选择；不要默认把所有分支都执行一遍。
 
@@ -87,7 +87,7 @@ Free% = Free / denominator
 
 ### 路径 2：调优相关分析能力
 
-适用于用户明确提出配置、通信、EP、算子融合、Free 偏高或 host 下发、图模式等调优问题，或要求基于 profile 给出调优方向的场景。本路径只产出候选和证据，不执行 benchmark 或变更。
+适用于用户明确提出配置、通信、EP、算子融合替换、模型代码优化、Free 偏高或 host 下发、图模式等调优问题，或要求基于 profile 给出调优方向的场景。本路径只产出候选和证据，不执行 benchmark 或变更。
 
 #### 2.1 图模式分析与推荐
 
@@ -131,29 +131,14 @@ EP 分支只按下面顺序执行，不把 profile 分析和配置推荐混在�
 
 流程：先按排查表排除请求稀疏、异常频率（空闲自动降频是 Free 长的结果，不结案），再按三条件确认 Host Bound；不成立或无法验证时按 device-bound queueing / `insufficient-evidence` 收口，不出下发候选。成立后拆 Free（逐条区间判读、dispatch 几何、算子下发分布统计）、查异常慢 API、根因分类，只给证据支撑的候选。判读口径与候选明细读取 [reference/free-analysis.md](reference/free-analysis.md)，输出区分 Host Bound / device-bound queueing / `insufficient-evidence`，附根因类别、候选和证据缺口。
 
-#### 2.5 Profile 驱动的算子融合分析
+#### 2.5 算子融合替换与模型代码优化
 
-当用户提示选择“算子融合”且 profile 显示高 Count 低 Avg 小算子、AI_CPU fallback 或 host dispatch 序列，并且 device 忙时段确实受其影响时，读取
-[reference/operator-fusion.md](reference/operator-fusion.md)。先确认 profile 类型，再决定结论强度：
+该分支推荐采集单请求 profile（只保留一个正式请求、停止并发压测、warmup 放在采集窗口外），用于确认算子顺序、shape/dtype 和模块边界；只有 benchmark profile 时只输出聚合热点候选和证据缺口，补采后才提交确定方案，收益验证仍用固定 benchmark。做两类工作，只产候选不执行：
 
-- **单请求 profile：用于候选定位。** 应只有一个正式请求，其他请求和并发压测停止，warmup 在 profile 外完成；profile 窗口应覆盖该请求从开始处理到完成的全过程，或明确记录实际覆盖的阶段。它用于还原一次请求的算子顺序、shape/dtype、host dispatch 和模块边界。
-- **benchmark profile：用于聚合证据和收益验证。** 它可以用于统计热点算子的 Count、Avg、Total/Ratio 和并发场景影响，但多个请求可能交错，不能据此声称看到了某一个请求的完整调用链或连续算子序列。
-- 如果只有 benchmark profile，先输出“聚合热点候选”和证据缺口；在提交融合 patch 或声称调用链已确认前，要求补采单请求 profile。单请求 profile 不能替代固定 benchmark 的最终收益验证。
+- **融合算子替换**：以 torch_npu 官方融合算子清单为起点，对照 profile 热点、源码连续序列和 config 约束判断小算子能否替换为已支持的融合算子；清单无对应算子时记录后跳过，不设计新 kernel；产出 vLLM 侧替换 patch 候选。
+- **模型代码优化方法应用**：按已验证的优化方法和思路（如零拷贝）扫描模型和输入准备代码中的匹配写法，确认适用判据后产出应用 patch 候选。
 
-算子融合不是只根据 profile 算子名给建议，必须联合分析：
-
-1. profile 中的算子 Count、Avg、Total/Ratio、Core Type、host dispatch 和临时张量迹象；
-2. vLLM 与 vllm-ascend 源码中模型 decoder layer `forward` 的真实调用链、模块边界和条件分支；
-3. 模型 `config.json` 中的 hidden size、head/head_dim、rotary、top-k、专家数、dtype、TP/EP 等 shape 和并行约束。
-
-`reference/operator-fusion.md` 已集中必要的融合模式、源码追踪、接口约束和报告要求，当前 skill 不需要运行时读取其他仓库的 skill。结合上述三类证据输出：
-
-4. 原始源码路径、逻辑位置和调用片段；
-5. 连续算子序列、输入 shape/dtype/layout 和 TP/EP 属性；
-6. 已有融合接口或需要实现的接口；
-7. 融合候选、预期收益、风险和回退方式。
-
-没有源码、shape 或真实接口证据时，只输出候选设计，不声称已经完成替换。
+融合算子替换流程、优化方法明细和候选输出格式读取 [reference/operator-fusion.md](reference/operator-fusion.md)。没有源码或接口证据时只输出候选，不声称已完成替换。
 
 #### 调优分析输出
 
@@ -167,6 +152,6 @@ EP 分支只按下面顺序执行，不把 profile 分析和配置推荐混在�
 | [reference/communication-analysis.md](reference/communication-analysis.md) | 多卡通信均衡性判定与不均衡根因分析（等待型/传输型/负载型） |
 | [reference/report-template.md](reference/report-template.md) | 正常 profile 报告模板 |
 | [reference/ep-balance.md](reference/ep-balance.md) | 生成和读取 EP 数据库，得出 token 负载结论；偏斜确认后生成 EPLB 配置候选 |
-| [reference/operator-fusion.md](reference/operator-fusion.md) | profile 热点到源码融合候选的分析规则 |
+| [reference/operator-fusion.md](reference/operator-fusion.md) | 融合算子替换（torch_npu 官方清单起点）与已验证模型代码优化方法 |
 | [reference/free-analysis.md](reference/free-analysis.md) | Free 时间成因判定与 host 下发（Host Bound）分析，落到 host 下发时给候选 |
 | [reference/graph-mode.md](reference/graph-mode.md) | 基于 profile 证据和部署形态推荐 cudagraph_mode |
