@@ -113,7 +113,7 @@ EP 分支只按下面顺序执行，不把 profile 分析和配置推荐混在�
 
 | 根因标签 | 调优建议/移交 |
 |---|---|
-| `wait-caused`（伪快卡） | host 下发侧候选，取证与候选见 [reference/free-analysis.md](reference/free-analysis.md) §4（`TASK_QUEUE_ENABLE=2` 含 eager 前提与显存风险、`enable_cpu_binding` 须 R 证据、`ACLNN_CACHE_LIMIT`） |
+| `wait-caused`（伪快卡） | host 下发侧候选，取证与候选见 [reference/free-analysis.md](reference/free-analysis.md) §4（`TASK_QUEUE_ENABLE=2` 含 eager 前提与显存风险、`enable_cpu_binding` 须 R 证据、`ACLNN_CACHE_LIMIT`、`OMP_NUM_THREADS` 按 host 端工作量定增减方向） |
 | `wait-caused`（计算算子种类不一致） | 移交算子/EP 分支查种类分叉原因（动态 shape、EP 路由、条件分支）；区别于负载型——那是同算子、次数/shape 更大 |
 | `wait-caused`（纯计算慢卡） | 计算瓶颈，转路径 1 的 Top-N 算子热点分析 |
 | `wait-caused`（频率异常） | 硬件/频率检查，不属调优候选 |
@@ -135,10 +135,10 @@ EP 分支只按下面顺序执行，不把 profile 分析和配置推荐混在�
 
 该分支推荐采集单请求 profile（只保留一个正式请求、停止并发压测、warmup 放在采集窗口外），用于确认算子顺序、shape/dtype 和模块边界；只有 benchmark profile 时只输出聚合热点候选和证据缺口，补采后才提交确定方案，收益验证仍用固定 benchmark。做两类工作，只产候选不执行：
 
+- **模型代码优化方法应用**：按已验证的优化方法和思路（如零拷贝、框架预留分支切换）扫描模型、输入准备和框架算子实现代码中的匹配写法，确认适用判据后产出应用 patch 候选。
 - **融合算子替换**：以 torch_npu 官方融合算子清单为起点，对照 profile 热点、源码连续序列和 config 约束判断小算子能否替换为已支持的融合算子；清单无对应算子时记录后跳过，不设计新 kernel；产出 vLLM 侧替换 patch 候选。
-- **模型代码优化方法应用**：按已验证的优化方法和思路（如零拷贝）扫描模型和输入准备代码中的匹配写法，确认适用判据后产出应用 patch 候选。
 
-融合算子替换流程、优化方法明细和候选输出格式读取 [reference/operator-fusion.md](reference/operator-fusion.md)。没有源码或接口证据时只输出候选，不声称已完成替换。
+模型代码优化方法、融合算子替换流程和候选输出格式读取 [reference/operator-fusion.md](reference/operator-fusion.md)。没有源码或接口证据时只输出候选，不声称已完成替换。
 
 #### 调优分析输出
 
