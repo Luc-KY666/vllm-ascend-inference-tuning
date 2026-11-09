@@ -4,6 +4,6 @@
 .git/
 .gp/
 results/
-scripts/
+/scripts/
 __pycache__/
 *.py[cod]
