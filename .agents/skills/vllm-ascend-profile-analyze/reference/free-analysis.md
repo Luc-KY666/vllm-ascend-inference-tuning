@@ -92,14 +92,23 @@ python scripts/dispatch_distribution.py <profile 父目录或单个 *_ascend_pt 
 六类根因可同时命中，每类自带候选/方向：
 
 - **模型侧下发压力**——找什么：高频小算子、launch 开销与 device 运行同量级、可融合的 Cast/TransData/Transpose 序列、低占用的零碎 kernel。候选：
-  - 融合/减少 launch 次数：转本 skill 的算子融合分支（SKILL.md 2.3）；
+  - 融合/减少 launch 次数：转本 skill 的算子融合分支（SKILL.md 2.5）；
   - 图模式（转 SKILL.md 2.1）：capture/replay 消除逐算子下发，优先于 `TASK_QUEUE_ENABLE=2`（后者限 eager）；
   - `TASK_QUEUE_ENABLE=2`：`ASCEND_LAUNCH_BLOCKING=1` 时失效；Level2 增 NPU 显存峰值；eager 模式前提；须先有下发/aclnn 在关键路径的证据，非通用解药；
   - `ACLNN_CACHE_LIMIT=100000`（默认 10000，范围 [1,10000000]）：动态 shape 一级下发瓶颈时；增 Host 内存；
+
 - **同步打断**——找什么：间隙内有 `aclrtSynchronizeStream`、`aten::item`、`.cpu()`、标量提取、数据依赖控制流。方向（代码侧）：确认同步是否语义必需，移出热路径、batch 或值留 device。
+
 - **CPU-only**——找什么：分发线程长时间做 Python 活不下发（预处理、日志、指标、shape/控制逻辑、host 张量）。方向（代码侧）：减少热路径 Python 工作、预计算或缓存 shape/控制结果、CPU 准备与 device 执行重叠。
-- **调度干扰**——找什么：分发线程被抢占、跨核/跨 NUMA 迁移、无记录空泡；`acl_thread` 一并查。判据边界：空泡在 profile 内无法区分被抢占（R）与睡眠等队列（S）——S 是队列空、睡在 eventfd 等 main 投递，属下发节奏不是调度，须 OS 级证据（sched_switch 的 prev_state）确认 R 才动绑核。候选：vLLM 侧 `enable_cpu_binding`（`additional_config`，默认 True 开启，vllm-ascend 的 `cpu_binding.py` 绑定 `acl_thread`/`release_thread`；关闭用 `--additional-config '{"enable_cpu_binding": false}'`）。
+
+- **调度干扰**——找什么：分发线程被抢占、跨核/跨 NUMA 迁移、无记录空泡；`acl_thread` 一并查。判据边界：空泡在 profile 内无法区分被抢占（R）与睡眠等队列（S）——S 是队列空、睡在 eventfd 等 main 投递，属下发节奏不是调度，须 OS 级证据（sched_switch 的 prev_state）确认 R 才动绑核。候选：
+  - vLLM 侧 `enable_cpu_binding`（`additional_config`，默认 True 开启，vllm-ascend 的 `cpu_binding.py` 绑定 `acl_thread`/`release_thread`；关闭用 `--additional-config '{"enable_cpu_binding": false}'`）：决定线程绑在哪些核——调度/拓扑优化，不改工作量；症状是延迟抖动、多 worker 干扰、跨 NUMA（numastat 远端访问高、`acl_thread` 被抢占）时调它，通常是确认它没被关闭；
+  
+  - `OMP_NUM_THREADS`：决定线程池开多大——并行度调优，直接改变 host 侧工作量分布；未显式设置时 vLLM 服务态收敛到单线程，显式设置不被 vLLM 覆盖。症状是 host 侧串行瓶颈（分发线程在 CPU 上跑满、存在可并行的准备阶段，如采样、metadata、host 张量准备）时，推荐增大；CPU 侧无值得并行的残余工作时，保持默认或显式设 1，避免 spin-wait 反噬。
+  两者交互：典型有效组合：绑核负责隔离和局部性，`OMP_NUM_THREADS` 在 main 池内决定 host 并行宽度。
+
 - **GC/锁/allocator**——找什么：周期性暂停、enqueue/dequeue 锁、内存分配抖动。候选：tcmalloc（`LD_PRELOAD="/usr/local/lib/libtcmalloc.so" ...`）：仅 host 分配开销或锁争用可见时；不要仅因 Host Bound 就换 allocator。
+
 - **host 下发时机错位（预取/锁步）**——找什么：§2 算子下发分布统计显示 enqueue 次数/总时长跨 rank 一致、落点相反——一侧大比例落 Communication（预取），一侧大比例落 Free（锁步），锁步侧 Free 即其下发暴露。机制是自反馈环：先到 → 等待窗口预填 → device 不空 → 又先到；后到 → 无等待窗口 → 实时下发 → device 空 → 又后到，方向一旦确定被锁死。种子（最初谁先到）profile 内不可判：框架 collective root 偏置或启动抖动，验证方法是多复测看方向固定还是随机。方向：缩短每层下发耗时等比缩短锁步侧 Free 暴露（锁步侧 Free 总量 ≈ 每层下发耗时 × 层数），引用模型侧下发压力类的候选。
 
 各候选改后须对比同 rank/时间窗的耗时、Free 占比和 dispatch 几何，单变量复测由 `vllm-ascend-profiling` 调优迭代编排。
