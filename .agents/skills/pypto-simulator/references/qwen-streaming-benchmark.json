@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "seed": 20250308,
+  "warmup_rounds": 1,
+  "measure_rounds": 3,
+  "cases": [
+    {
+      "id": "serial-2in-5out",
+      "requests": 1,
+      "concurrency": 1,
+      "input_tokens": 2,
+      "output_tokens": 5
+    },
+    {
+      "id": "batch4-8in-8out",
+      "requests": 4,
+      "concurrency": 4,
+      "input_tokens": 8,
+      "output_tokens": 8
+    },
+    {
+      "id": "batch4-32in-12out",
+      "requests": 4,
+      "concurrency": 4,
+      "input_tokens": 32,
+      "output_tokens": 12
+    },
+    {
+      "id": "serial-128in-16out",
+      "requests": 1,
+      "concurrency": 1,
+      "input_tokens": 128,
+      "output_tokens": 16
+    },
+    {
+      "id": "batch16-16in-8out",
+      "requests": 16,
+      "concurrency": 16,
+      "input_tokens": 16,
+      "output_tokens": 8
+    }
+  ]
+}

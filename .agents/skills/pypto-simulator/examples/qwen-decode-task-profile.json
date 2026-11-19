@@ -1,0 +1,115 @@
+{
+  "metadata": {
+    "note": "Contract fixture only; durations are not hardware measurements"
+  },
+  "model": {
+    "family": "qwen",
+    "model_id": "qwen3-14b"
+  },
+  "source": {
+    "kind": "fixture",
+    "npu_measured": false
+  },
+  "tasks": [
+    {
+      "active_subslots": ["AIV0"],
+      "block_num": 1,
+      "dependencies": [],
+      "duration_samples_us": [2.8, 3.0, 3.2],
+      "subslot_duration_samples_us": {
+        "AIV0": [2.8, 3.0, 3.2]
+      },
+      "features": {
+        "active_batch": 1,
+        "dtype": "bfloat16",
+        "kernel_batch": 1
+      },
+      "kernel_ids": [-1, 0, -1],
+      "kernel_names": ["token_embed"],
+      "program": "decode_fwd",
+      "kind": "compute",
+      "outputs": [],
+      "phase": "decode",
+      "resource_shape": "AIV",
+      "task_id": "t0",
+      "task_name": "token_embed",
+      "tensor_roles": ["control", "weight"]
+    },
+    {
+      "active_subslots": ["AIC", "AIV0", "AIV1"],
+      "block_num": 8,
+      "dependencies": ["t0"],
+      "duration_samples_us": [40.0, 41.0, 42.0],
+      "subslot_duration_samples_us": {
+        "AIC": [40.0, 41.0, 42.0],
+        "AIV0": [35.0, 36.0, 37.0],
+        "AIV1": [34.0, 35.0, 36.0]
+      },
+      "features": {
+        "active_batch": 1,
+        "dtype": "bfloat16",
+        "kernel_batch": 1,
+        "kv_length": 512
+      },
+      "kernel_ids": [1, 2, 3],
+      "kernel_names": ["decode_attention_aic", "decode_attention_aiv"],
+      "program": "decode_fwd",
+      "kind": "compute",
+      "outputs": [],
+      "phase": "decode",
+      "resource_shape": "MIX",
+      "task_id": "t1",
+      "task_name": "decode_attention",
+      "tensor_roles": ["kv_cache", "weight"]
+    },
+    {
+      "active_subslots": ["AIV0"],
+      "block_num": 1,
+      "dependencies": ["t1"],
+      "duration_samples_us": [6.5, 7.0, 7.5],
+      "subslot_duration_samples_us": {
+        "AIV0": [6.5, 7.0, 7.5]
+      },
+      "features": {
+        "active_batch": 1,
+        "padded_vocab": 152064,
+        "sampled_ids_width": 8
+      },
+      "kernel_ids": [-1, 4, -1],
+      "kernel_names": ["greedy_sample"],
+      "program": "decode_fwd",
+      "kind": "compute",
+      "outputs": [
+        {
+          "dtype": "int32",
+          "arg_index": 1,
+          "name": "sampled_ids",
+          "role": "control",
+          "shape": ["BATCH", 8]
+        }
+      ],
+      "phase": "decode",
+      "resource_shape": "AIV",
+      "task_id": "t2",
+      "task_name": "greedy_sample",
+      "tensor_roles": ["activation", "control"]
+    },
+    {
+      "active_subslots": [],
+      "block_num": 1,
+      "dependencies": ["t2"],
+      "duration_samples_us": [],
+      "features": {},
+      "kernel_ids": [-1, -1, -1],
+      "kernel_names": [],
+      "program": "decode_fwd",
+      "kind": "synchronization",
+      "outputs": [],
+      "phase": "decode",
+      "resource_shape": "NONE",
+      "task_id": "t3",
+      "task_name": "decode_complete",
+      "tensor_roles": ["control"]
+    }
+  ]
+}

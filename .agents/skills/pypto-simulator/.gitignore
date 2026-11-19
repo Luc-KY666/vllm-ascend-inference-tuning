@@ -1,0 +1,4 @@
+# Generated JIT/compiler and local Python artifacts are not skill inputs.
+build_output/
+**/__pycache__/
+**/*.pyc
